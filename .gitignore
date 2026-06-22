@@ -1,0 +1,19 @@
+# Data & model artifacts (large, regenerable)
+data/
+checkpoints/
+*.gguf
+*.safetensors
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS / tooling
+.DS_Store
+.omc/
