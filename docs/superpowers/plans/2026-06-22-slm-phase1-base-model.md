@@ -20,6 +20,36 @@
 
 ---
 
+## Execution Protocol — Learning Mode (READ FIRST, every session)
+
+**This project's primary purpose is for vpillai to *learn*, not to generate a blog or ship code fast.** The blog is a later, separate task. Execution must therefore be a guided, hands-on teaching loop — never silent batch implementation. Run **every task** through this loop:
+
+1. **Frame** — before any code, explain in plain language *what* we're about to build and *why it exists* (the concept). No heavy math; favor intuition, the software↔model analogy, and data flow.
+2. **Clarify** — invite questions; answer them; surface assumptions. Do not proceed until the concept is clear.
+3. **Predict (optional)** — ask "what do you expect to happen when we run this?" to prime understanding before seeing output.
+4. **Do — vpillai drives** — present the step; vpillai writes/runs it following along (Claude shows the exact code/command). Look at the real output together. Claude does not race ahead through multiple steps unprompted.
+5. **Check understanding** — short recap; ask vpillai to explain it back in their own words; a **1–2 question mini-quiz** where it adds value. If shaky, re-explain before moving on.
+6. **Record** — update `DEVLOG.md` (what/why/gotchas), add/extend the `CONCEPTS.md` entry, tick the step's checkbox.
+7. **Checkpoint** — confirm with vpillai before starting the next task.
+
+**Pace:** one step at a time. Showable intermediate results are the point — pause and observe at each milestone rung. The explanatory `★ Insight` blocks stay on throughout.
+
+## Resuming Across Sessions (multi-session continuity)
+
+This work spans many sessions. To resume cleanly in a **fresh session**, do this in order:
+
+1. Read the spec: `docs/superpowers/specs/2026-06-22-slm-from-scratch-phase1-design.md`.
+2. Read this plan (especially this protocol + Global Constraints).
+3. **Find current position:** the source of truth is the checkbox state in this file — the first unchecked `- [ ]` step is where we resume. Cross-check with the latest `DEVLOG.md` entry and `git log`.
+4. Re-activate the environment (don't reinstall): `. .venv/bin/activate`. (`.venv/`, `data/`, `checkpoints/` are gitignored and stay local between sessions; `REPRODUCE.md` has setup if missing.)
+5. Continue under the Learning-Mode loop above from the first unchecked step.
+
+**Progress-tracking rule:** as each step completes, (a) tick its `- [ ]` → `- [x]` in this file and (b) append to `DEVLOG.md`. These two, plus `git log`, are the durable cross-session state. Claude's per-project memory also records phase/status as a backup pointer, but the repo is authoritative.
+
+**Kick-off phrase for a new session:** "Continue the model_learn project" — that signals Claude to run the resume steps above.
+
+---
+
 ### Task 1: Project scaffold, configs, and doc skeleton
 
 **Files:**
