@@ -6,7 +6,7 @@
 
 **Architecture:** A decoder-only transformer written from scratch in plain PyTorch (token embeddings → RoPE + RMSNorm + causal self-attention + SwiGLU MLP, pre-norm Llama style → tied LM head). Two configs (`toy` for minutes-on-CPU dev, `small` ~14M params for the Colab run) run the *same* code. Standard libraries (`tokenizers`, `transformers`, `datasets`) are reused as building blocks and probed with runnable Labs. The hand-built weights are exported into `LlamaForCausalLM` so the artifact converts to GGUF with no custom runtime.
 
-**Tech Stack:** Python 3.13, PyTorch (CPU local / GPU Colab), Hugging Face `tokenizers` / `transformers` / `datasets`, `huggingface_hub`, matplotlib, pytest; llama.cpp + Ollama for the run step.
+**Tech Stack:** Python 3.13 managed with `uv` (venv + `uv.lock`), PyTorch (CPU local / GPU Colab), Hugging Face `tokenizers` / `transformers` / `datasets`, `huggingface_hub`, matplotlib, pytest; llama.cpp + Ollama for the run step (each installed/built as a learning step).
 
 ## Global Constraints
 
@@ -16,6 +16,7 @@
 - **Tests never download the internet:** unit tests use a tiny inline text fixture, never the real TinyStories dataset. The real dataset is used only by the actual training runs (Tasks 5–6).
 - **HF-exact architecture:** the hand-built model must match `transformers` `LlamaForCausalLM` numerically — same RMSNorm float32 trick, same `rotate_half` RoPE convention, bias-free linears, `rms_norm_eps = 1e-5`, `rope_theta = 10000`. This is enforced by the round-trip test in Task 7.
 - **No GQA, no MoE in Phase 1:** `num_key_value_heads == num_attention_heads`. (Both are later Labs/phases.)
+- **Environment via `uv`:** the venv + dependencies are managed by `uv` (`pyproject.toml` + committed `uv.lock`); a portable `requirements.txt` is generated with `uv export` for Colab. Run tests/scripts with the venv activated or prefixed by `uv run`. Installing/building tools (uv, llama.cpp, Ollama) is treated as part of the learning, not glossed over.
 - **Package import path:** all library code lives under `src/slm/`; tests run from repo root with `PYTHONPATH=src` (set in `pytest.ini`).
 
 ---
@@ -53,7 +54,8 @@ This work spans many sessions. To resume cleanly in a **fresh session**, do this
 ### Task 1: Project scaffold, configs, and doc skeleton
 
 **Files:**
-- Create: `requirements.txt`
+- Create: `pyproject.toml` (uv-managed dependencies) + `uv.lock` (committed lockfile)
+- Create: `requirements.txt` (generated via `uv export`, for Colab / non-uv environments)
 - Create: `pytest.ini`
 - Create: `src/slm/__init__.py`
 - Create: `src/slm/config.py`
@@ -63,18 +65,33 @@ This work spans many sessions. To resume cleanly in a **fresh session**, do this
 **Interfaces:**
 - Produces: `ModelConfig` dataclass with fields `vocab_size:int, d_model:int, n_layers:int, n_heads:int, n_kv_heads:int, head_dim:int, ffn_hidden:int, context_len:int, rms_norm_eps:float, rope_theta:float, tie_embeddings:bool`; helper `ModelConfig.n_params() -> int`; module constants `TOY: ModelConfig` and `SMALL: ModelConfig`.
 
-- [ ] **Step 1: Create `requirements.txt`**
+- [ ] **Step 1: Install `uv`, then declare dependencies in `pyproject.toml`**
 
+`uv` is a fast Python package + Python-version manager; we use it for a reproducible, **lockfile-backed** environment. *Installing the tool is itself part of the learning* — check first, install only if missing:
+```bash
+uv --version || curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
-torch>=2.5
-tokenizers>=0.20
-transformers>=4.45
-datasets>=3.0
-huggingface_hub>=0.25
-matplotlib>=3.9
-numpy>=1.26
-pytest>=8.0
+Create `pyproject.toml` (the source of truth for dependencies — `uv` resolves and locks it):
+```toml
+[project]
+name = "model-learn"
+version = "0.1.0"
+description = "Hand-built SLM from scratch to Ollama (learning project)"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.5",
+    "tokenizers>=0.20",
+    "transformers>=4.45",
+    "datasets>=3.0",
+    "huggingface_hub>=0.25",
+    "matplotlib>=3.9",
+    "numpy>=1.26",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 ```
+No `[build-system]` table → `uv` treats this as a non-packaged "virtual" project: it installs the dependencies into the venv but does not try to build/install `model-learn` itself. Imports are handled by `pythonpath = src` (Step 2).
 
 - [ ] **Step 2: Create `pytest.ini`**
 
@@ -85,13 +102,15 @@ testpaths = tests
 addopts = -q
 ```
 
-- [ ] **Step 3: Create the virtual environment and install**
+- [ ] **Step 3: Create the environment and install with `uv`**
 
 Run:
 ```bash
-python3 -m venv .venv && . .venv/bin/activate && pip install -U pip && pip install -r requirements.txt
+uv venv          # creates .venv using an available Python 3.13
+uv sync          # resolves + installs deps, writes uv.lock (commit it)
+uv export --no-hashes --format requirements-txt -o requirements.txt  # portable list for Colab
 ```
-Expected: installs complete. If the `torch` aarch64/Py3.13 wheel fails, retry with `pip install torch --index-url https://download.pytorch.org/whl/cpu` and record the working command in `DEVLOG.md`.
+Expected: `.venv/` created, `uv.lock` written, dependencies installed. Either `source .venv/bin/activate` once, or prefix commands with `uv run` (e.g. `uv run pytest`). If the `torch` aarch64/Py3.13 wheel fails to resolve, add the CPU index: `uv pip install torch --index-url https://download.pytorch.org/whl/cpu`, and record the working command in `DEVLOG.md`.
 
 - [ ] **Step 4: Write the failing test** in `tests/test_config.py`
 
@@ -214,18 +233,19 @@ numbers, adjusted during training. Lab: see `n_params()` in `src/slm/config.py`.
 
 Follow-along guide (distilled from DEVLOG). Build the whole thing yourself.
 
-## 0. Environment
+## 0. Environment (uv)
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+# install uv if needed: curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv && uv sync          # creates .venv, installs deps from uv.lock
+source .venv/bin/activate   # or prefix commands with `uv run`
 ```
 ```
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add requirements.txt pytest.ini src tests README.md DEVLOG.md CHANGELOG.md CONCEPTS.md REPRODUCE.md
-git commit -m "feat: project scaffold, ModelConfig (toy/small), docs skeleton"
+git add pyproject.toml uv.lock requirements.txt pytest.ini src tests README.md DEVLOG.md CHANGELOG.md CONCEPTS.md REPRODUCE.md
+git commit -m "feat: project scaffold (uv env), ModelConfig (toy/small), docs skeleton"
 ```
 
 ---
@@ -1124,7 +1144,7 @@ Cell 1 (setup):
 ```python
 !git clone <YOUR_REPO_URL> model_learn || true
 %cd model_learn
-!pip -q install -r requirements.txt
+!pip -q install -r requirements.txt   # uv-exported list; Colab has no uv by default
 import torch; print("CUDA:", torch.cuda.is_available())
 ```
 
@@ -1440,7 +1460,7 @@ Expected: Lab 07 prints `b'GGUF'` + counts; Lab 08 shows size shrinking f16 → 
 
 - [ ] **Step 9: Update docs**
 
-`CONCEPTS.md`: **GGUF (container format)**, **quantization**, **Q8_0 vs Q4_K_M**, **inference engine (llama.cpp/Ollama)**, **Modelfile**. `DEVLOG.md`: record GGUF sizes, the Ollama transcript, and quant comparison. `CHANGELOG.md`: mark Phase 1 complete. `REPRODUCE.md`: add the full convert → Ollama section. Update `README.md` quickstart to `ollama run tinystories-slm`.
+`CONCEPTS.md`: **GGUF (container format)**, **quantization**, **Q8_0 vs Q4_K_M**, **inference engine (llama.cpp/Ollama)**, **Modelfile**, and **model compiler / deep-learning compiler** — frame this step explicitly as a *miniature model compiler*: `convert_hf_to_gguf.py` = export-to-IR, `llama-quantize` = an optimization pass, llama.cpp picking CPU kernels at load = codegen/runtime. Note the general landscape (ONNX Runtime, TVM, MLIR/IREE, TensorRT, OpenVINO, MLC-LLM) and that vendor stacks (incl. Tenstorrent's MLIR/Metalium toolchain) are the same idea for custom hardware — the transferable mental model for "download from HF → compile for hardware → run with confidence." `DEVLOG.md`: record GGUF sizes, the Ollama transcript, and quant comparison. `CHANGELOG.md`: mark Phase 1 complete. `REPRODUCE.md`: add the full convert → Ollama section. Update `README.md` quickstart to `ollama run tinystories-slm`.
 
 - [ ] **Step 10: Commit**
 
@@ -1456,7 +1476,7 @@ git commit -m "feat: GGUF conversion + Ollama run; Phase 1 complete (Labs 07-08)
 **Spec coverage:**
 - §3 hand-build Llama-shaped → Tasks 4a/4b; HF-exactness enforced by Task 7 round-trip. ✓
 - §3 reuse libs + Labs → tokenizer (T2/Lab01), attention (Lab02), gibberish (Lab03), sampling (Lab05), GGUF (Lab07/08). ✓
-- §4 tech stack → requirements.txt (T1). ✓
+- §4 tech stack → `pyproject.toml` + `uv.lock` (uv-managed), `requirements.txt` exported for Colab (T1). ✓
 - §5 dataset → `load_tinystories` (T3), used in T5/T6. ✓
 - §6 model + two configs → T1 (configs), T4a/T4b (model). No GQA/MoE honored. ✓
 - §7 milestone ladder → tokenizer (T2), batch (T3), gibberish (T4b), overfit (T5), toy run (T5), coherent (T6), published (T7), GGUF (T8), Ollama (T8). All nine rungs mapped. ✓

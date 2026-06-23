@@ -34,8 +34,9 @@ The deliverable is **as much the journey as the model**: reproduction-grade deve
 | **1. Base model** *(this spec)* | "From zero to a story-telling model on your CPU" | Tokenization, the transformer, pretraining, packaging, GGUF, CPU inference | A TinyStories model on HF Hub that runs in Ollama |
 | **2. Chat model** | "Teaching it to follow instructions" | Fine-tuning, chat templates, base-vs-instruct distinction | A tiny instruct/chat model |
 | **3. Deepening** *(optional)* | "What's really in a `.gguf`" + "Mixture of Experts, gently" | Quantization internals; MoE intuition | A GGUF teardown + a small 4-expert MoE side-experiment |
+| **4. Model compilers & custom hardware** *(optional)* | "From a downloaded model to running on real hardware" | The deep-learning-compiler mental model: export → IR → lower/optimize → hardware engine; the tool landscape (ONNX Runtime, TVM, MLIR/IREE, TensorRT, OpenVINO, MLC-LLM) and how vendor stacks (incl. Tenstorrent's MLIR/Metalium toolchain) fit | A written conceptual map + the realization that Phase-1's GGUF/llama.cpp path *is* a miniature model compiler |
 
-Each phase builds on the prior one's artifact. Architecture choices in Phase 1 are made so Phases 2–3 follow cleanly (standard Llama shape → fine-tuning and GGUF "just work"; the feed-forward block is the future MoE "expert").
+Each phase builds on the prior one's artifact. Architecture choices in Phase 1 are made so Phases 2–4 follow cleanly (standard Llama shape → fine-tuning, GGUF, and hardware compilers "just work"; the feed-forward block is the future MoE "expert"). Phase 4 is cursory by intent — the mental model and tool landscape, not a deep compiler-internals course — and directly serves the goal of downloading and deploying online models on custom hardware with confidence.
 
 ---
 
@@ -47,16 +48,18 @@ Each phase builds on the prior one's artifact. Architecture choices in Phase 1 a
 4. **Config-scalable code.** The exact same code runs a 2-minute `toy` job on local CPU and a multi-hour `small` job on a Colab GPU — only a config changes.
 5. **Concept-on-contact teaching.** No new code without (a) a one-line "why this exists," (b) a runnable Lab, and (c) a `CONCEPTS.md` entry.
 6. **Reproduction-first docs, blog-later.** Notes are optimized for fidelity/reproducibility, not narrative. The blog is a separate downstream task written in the author's own style from these notes.
+7. **Tooling is part of the curriculum.** Setting up the environment (`uv` + venv) and installing/building the tools (uv, llama.cpp from source, Ollama) are treated as learning steps, not glossed over — understanding the toolchain is part of "download → build → run" fluency.
 
 ---
 
 ## 4. Tech Stack (with rationale)
 
+- **`uv` (environment + dependencies)** — fast, reproducible, lockfile-backed Python setup (`pyproject.toml` + `uv.lock`); a `requirements.txt` is exported via `uv export` for Colab/non-uv environments. Installing `uv` itself is the first hands-on step.
 - **Python 3.13 + PyTorch** — CPU build locally, GPU on Colab; same code both places.
 - **Hugging Face `tokenizers`** — train a real BPE tokenizer (Lab opens the hood on BPE merges).
 - **Hugging Face `transformers`** — used *only at packaging time* to wrap hand-trained weights as `LlamaForCausalLM` so the artifact is standard and converts to GGUF cleanly.
 - **Hugging Face `datasets`** — pull `roneneldan/TinyStories` (public).
-- **llama.cpp** — `convert_hf_to_gguf.py` + quantizer + CPU inference engine.
+- **llama.cpp** — `convert_hf_to_gguf.py` + quantizer + CPU inference engine. Doubles as a *miniature model compiler* (export-to-IR → optimization pass → kernel-selecting runtime); the conceptual bridge to Phase 4 and to vendor hardware stacks.
 - **Ollama** — friendly local runner for the final demo.
 - **matplotlib** — loss-curve plots.
 
@@ -236,6 +239,7 @@ Plus light unit tests: model forward-pass output shape; tokenizer encode→decod
 
 - Instruction tuning / chat templates (Phase 2).
 - Mixture of Experts; GGUF quantization deep-dive (Phase 3).
+- Deep dive into deep-learning compilers / running on custom hardware (Phase 4) — Phase 1 only *touches* the concept via the GGUF/llama.cpp path.
 - GQA, multi-GPU/distributed training, advanced optimizers, RLHF.
 - The actual blog articles (separate downstream task using author-provided writing constructs).
 
