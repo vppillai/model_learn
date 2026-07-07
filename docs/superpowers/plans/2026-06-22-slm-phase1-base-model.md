@@ -261,7 +261,7 @@ git commit -m "feat: project scaffold (uv env), ModelConfig (toy/small), docs sk
 - Consumes: nothing.
 - Produces: `train_tokenizer(texts: Iterable[str], vocab_size: int, save_path: str) -> Tokenizer`; `load_tokenizer(path: str) -> Tokenizer`; `encode(tok, text: str) -> list[int]`; `decode(tok, ids: list[int]) -> str`. Special tokens: `<|endoftext|>` (id 0 reserved as both BOS-ish separator and EOS for stories).
 
-- [ ] **Step 1: Write the failing test** in `tests/test_tokenizer.py`
+- [x] **Step 1: Write the failing test** in `tests/test_tokenizer.py`
 
 ```python
 import random
@@ -297,12 +297,12 @@ def test_endoftext_special_token(tmp_path):
     assert tok.token_to_id("<|endoftext|>") == 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_tokenizer.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.tokenizer'`.
 
-- [ ] **Step 3: Implement `src/slm/tokenizer.py`**
+- [x] **Step 3: Implement `src/slm/tokenizer.py`**
 
 ```python
 from typing import Iterable
@@ -342,12 +342,12 @@ def decode(tok: Tokenizer, ids: list[int]) -> str:
     return tok.decode(ids)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_tokenizer.py -v`
 Expected: PASS (3 passed). Note: byte-level decode reconstructs spaces exactly; the roundtrip test strips spaces defensively in case of leading-space normalization.
 
-- [ ] **Step 5: Write the Lab** `labs/lab01_bpe_by_hand.py`
+- [x] **Step 5: Write the Lab** `labs/lab01_bpe_by_hand.py`
 
 ```python
 """Lab 01 — watch BPE merges form on a single paragraph.
@@ -370,12 +370,12 @@ print("\nNotice: as the vocab grows, common chunks like 'the ' and 'cat'")
 print("become single tokens. That merging IS what BPE training does.")
 ```
 
-- [ ] **Step 6: Run the Lab and observe**
+- [x] **Step 6: Run the Lab and observe**
 
 Run: `python labs/lab01_bpe_by_hand.py`
 Expected: as vocab grows, `'the cat sat'` collapses from many character tokens into fewer, larger merged tokens.
 
-- [ ] **Step 7: Update docs**
+- [x] **Step 7: Update docs**
 
 Add to `CONCEPTS.md`: entries for **tokenizer**, **token / token id**, **BPE (byte-pair encoding)**, **vocabulary**, **special token (`<|endoftext|>`)**, each 3–5 sentences, cross-linking `labs/lab01_bpe_by_hand.py`. Add a `DEVLOG.md` dated entry and a `CHANGELOG.md` line. Add a "Milestone: tokenizer" section to `REPRODUCE.md` with the train/encode/decode commands.
 

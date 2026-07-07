@@ -41,3 +41,18 @@ Dated, chronological record of what we did and why — including dead-ends.
   uv sync
   uv export --no-hashes --format requirements-txt --no-emit-package torch -o requirements.txt
   ```
+
+## 2026-07-07 — Task 2: BPE tokenizer
+
+- Implemented `train_tokenizer`/`load_tokenizer`/`encode`/`decode` in
+  `src/slm/tokenizer.py` using HF `tokenizers` (BPE model, byte-level
+  pre-tokenizer/decoder, `<|endoftext|>` pinned to id 0 as the only special
+  token). All 3 tests pass first try — no gotchas this task.
+- Lab 01 (`labs/lab01_bpe_by_hand.py`) confirms BPE merges forming live: at
+  `vocab_size=260`, `"the cat sat"` tokenizes as
+  `['the', 'Ġ', 'c', 'at', 'Ġ', 's', 'at']` (cat/sat still split); by
+  `vocab_size=270` it collapses to `['the', 'Ġcat', 'Ġsat']` — common chunks
+  become single tokens as the vocab budget grows.
+- Noted the `Ġ` symbol (byte-level pre-tokenizer's visible stand-in for a
+  leading space, a GPT-2-era convention) in `CONCEPTS.md` — `Ġcat` and `cat`
+  are different tokens depending on whether a space precedes the word.

@@ -22,3 +22,11 @@ CPU pin from this project would overwrite it.
 uv run pytest tests/test_config.py -v
 PYTHONPATH=src uv run python -c "from slm.config import TOY, SMALL; print(TOY.n_params(), SMALL.n_params())"
 ```
+
+## Milestone: tokenizer
+```bash
+uv run pytest tests/test_tokenizer.py -v
+PYTHONPATH=src uv run python labs/lab01_bpe_by_hand.py
+```
+Watch the `labs/lab01_bpe_by_hand.py` output: as `vocab_size` grows, common
+chunks like `"the "`/`"cat"` collapse from multiple tokens into one.
