@@ -56,3 +56,40 @@ Dated, chronological record of what we did and why — including dead-ends.
 - Noted the `Ġ` symbol (byte-level pre-tokenizer's visible stand-in for a
   leading space, a GPT-2-era convention) in `CONCEPTS.md` — `Ġcat` and `cat`
   are different tokens depending on whether a space precedes the word.
+
+## 2026-07-07 — Side note: embeddings are context-blind but gradient-shaped
+
+Before starting Task 3, dug into a question that came up naturally: if the
+embedding table is just a per-token lookup with no notion of context, how
+does training "teach" it anything context-dependent? Answer: the lookup
+itself never changes based on context, but the *gradient* that updates each
+row does — it's computed from whatever context that token happened to
+appear in during a given training step. Demonstrated with a throwaway
+(non-project) script:
+
+```python
+import torch, torch.nn as nn, torch.nn.functional as F
+torch.manual_seed(0)
+emb = nn.Embedding(10, 4)
+proj = nn.Linear(4, 10, bias=False)
+opt = torch.optim.SGD(list(emb.parameters()) + list(proj.parameters()), lr=0.5)
+
+before = emb.weight[3].clone()
+for target in [7, 1]:               # token 3 used in two different "contexts"
+    x = emb(torch.tensor([3]))      # same context-blind lookup both times
+    loss = F.cross_entropy(proj(x), torch.tensor([target]))
+    opt.zero_grad(); loss.backward(); opt.step()
+after = emb.weight[3].clone()
+```
+
+Output: token 3's row moved from `[0.1198, 1.2377, 1.1168, -0.2473]` to
+`[0.2044, 1.0753, 0.8215, -0.1826]` after two gradient steps with
+*conflicting* targets (7, then 1) — concrete proof that the same
+context-blind row gets reshaped by context-dependent training signal.
+Landed as two `CONCEPTS.md` entries: `d_model`, `embedding table`, and "how
+the embedding table learns despite being context-blind." Also broke down
+`n_params()` by component for `TOY` vs `SMALL` — embedding table is 61.4% of
+`TOY` (tiny `d_model` relative to `vocab_size`) but only 22.8% of `SMALL`;
+feed-forward becomes the largest component (51.4%) as the model scales up,
+since attention/FFN cost scales with `n_layers` while the embedding table
+does not.
