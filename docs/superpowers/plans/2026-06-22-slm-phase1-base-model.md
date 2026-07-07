@@ -65,7 +65,7 @@ This work spans many sessions. To resume cleanly in a **fresh session**, do this
 **Interfaces:**
 - Produces: `ModelConfig` dataclass with fields `vocab_size:int, d_model:int, n_layers:int, n_heads:int, n_kv_heads:int, head_dim:int, ffn_hidden:int, context_len:int, rms_norm_eps:float, rope_theta:float, tie_embeddings:bool`; helper `ModelConfig.n_params() -> int`; module constants `TOY: ModelConfig` and `SMALL: ModelConfig`.
 
-- [ ] **Step 1: Install `uv`, then declare dependencies in `pyproject.toml`**
+- [x] **Step 1: Install `uv`, then declare dependencies in `pyproject.toml`**
 
 `uv` is a fast Python package + Python-version manager; we use it for a reproducible, **lockfile-backed** environment. *Installing the tool is itself part of the learning* — check first, install only if missing:
 ```bash
@@ -93,7 +93,7 @@ dev = ["pytest>=8.0"]
 ```
 No `[build-system]` table → `uv` treats this as a non-packaged "virtual" project: it installs the dependencies into the venv but does not try to build/install `model-learn` itself. Imports are handled by `pythonpath = src` (Step 2).
 
-- [ ] **Step 2: Create `pytest.ini`**
+- [x] **Step 2: Create `pytest.ini`**
 
 ```ini
 [pytest]
@@ -102,7 +102,7 @@ testpaths = tests
 addopts = -q
 ```
 
-- [ ] **Step 3: Create the environment and install with `uv`**
+- [x] **Step 3: Create the environment and install with `uv`**
 
 Run:
 ```bash
@@ -112,7 +112,7 @@ uv export --no-hashes --format requirements-txt -o requirements.txt  # portable 
 ```
 Expected: `.venv/` created, `uv.lock` written, dependencies installed. Either `source .venv/bin/activate` once, or prefix commands with `uv run` (e.g. `uv run pytest`). If the `torch` aarch64/Py3.13 wheel fails to resolve, add the CPU index: `uv pip install torch --index-url https://download.pytorch.org/whl/cpu`, and record the working command in `DEVLOG.md`.
 
-- [ ] **Step 4: Write the failing test** in `tests/test_config.py`
+- [x] **Step 4: Write the failing test** in `tests/test_config.py`
 
 ```python
 from slm.config import ModelConfig, TOY, SMALL
@@ -130,14 +130,14 @@ def test_small_targets_about_14M_params():
     assert 10_000_000 < SMALL.n_params() < 16_000_000
 ```
 
-- [ ] **Step 5: Run test to verify it fails**
+- [x] **Step 5: Run test to verify it fails**
 
 Run: `pytest tests/test_config.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.config'`.
 
-- [ ] **Step 6: Create `src/slm/__init__.py`** (empty file).
+- [x] **Step 6: Create `src/slm/__init__.py`** (empty file).
 
-- [ ] **Step 7: Implement `src/slm/config.py`**
+- [x] **Step 7: Implement `src/slm/config.py`**
 
 ```python
 from dataclasses import dataclass
@@ -181,12 +181,12 @@ SMALL = ModelConfig(
 )
 ```
 
-- [ ] **Step 8: Run tests to verify they pass**
+- [x] **Step 8: Run tests to verify they pass**
 
 Run: `pytest tests/test_config.py -v`
 Expected: PASS (2 passed).
 
-- [ ] **Step 9: Create doc stubs**
+- [x] **Step 9: Create doc stubs**
 
 `README.md`:
 ```markdown

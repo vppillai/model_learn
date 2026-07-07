@@ -1,0 +1,25 @@
+[project]
+name = "model-learn"
+version = "0.1.0"
+description = "Hand-built SLM from scratch to Ollama (learning project)"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.5",
+    "tokenizers>=0.20",
+    "transformers>=4.45",
+    "datasets>=3.0",
+    "huggingface_hub>=0.25",
+    "matplotlib>=3.9",
+    "numpy>=1.26",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
