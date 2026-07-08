@@ -9,20 +9,21 @@ config (`SMALL` vs `TOY`) and the compute (GPU vs CPU) differ.
 
 ## Prerequisite: the repo must be reachable by Colab
 
-Colab's first cell does `git clone`, so the repo needs to live on a remote
-(e.g. GitHub). From your machine:
+Colab's first cell does `git clone`, so the repo needs to live on a remote.
+This is already set up: the repo is public at
+**https://github.com/vppillai/model_learn**, and the notebook's `REPO_URL` is
+pre-filled to it. Nothing to do here for the first run.
+
+If you make more local commits before running, push them so Colab clones the
+latest:
 
 ```bash
-# create an empty repo on GitHub first (gh or the website), then:
-git remote add origin https://github.com/<your-username>/model_learn.git
-git push -u origin master
+git push
 ```
 
-Then set `REPO_URL` in the notebook's first code cell to that URL.
-
-**No-git fallback:** if you'd rather not push, you can instead upload the
-`src/` folder and `requirements.txt` to the Colab session (Files panel →
-upload), skip the clone cell, and `pip install -r requirements.txt`.
+**No-git fallback:** if you'd rather not use the remote, upload the `src/`
+folder and `requirements.txt` to the Colab session (Files panel → upload),
+skip the clone cell, and `pip install -r requirements.txt`.
 
 ## Steps
 
