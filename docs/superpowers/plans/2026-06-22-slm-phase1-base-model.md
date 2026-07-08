@@ -399,7 +399,7 @@ git commit -m "feat: BPE tokenizer with train/load/encode/decode + Lab 01"
 - Consumes: `Tokenizer` from Task 2.
 - Produces: `tokenize_texts(tok, texts: list[str]) -> list[int]` (flat stream with `<|endoftext|>` id 0 between docs); `get_batch(data: list[int], batch_size: int, context_len: int, seed: int) -> tuple[Tensor, Tensor]` returning `(x, y)` each shaped `(batch_size, context_len)`, where `y` is `x` shifted left by one; `load_tinystories(split: str, limit: int|None) -> list[str]` (real dataset loader, NOT used in tests).
 
-- [ ] **Step 1: Create the fixture** `tests/fixtures/tiny_stories.txt`
+- [x] **Step 1: Create the fixture** `tests/fixtures/tiny_stories.txt`
 
 ```
 Once upon a time there was a little cat who loved the warm sun.
@@ -409,7 +409,7 @@ They ran across the green field and laughed in the bright light.
 ```
 (repeat/extend to ~30 short lines of similar simple sentences.)
 
-- [ ] **Step 2: Write the failing test** in `tests/test_data.py`
+- [x] **Step 2: Write the failing test** in `tests/test_data.py`
 
 ```python
 import torch
@@ -449,12 +449,12 @@ def test_batch_is_deterministic_with_seed(tmp_path):
     assert torch.equal(a, b)
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `pytest tests/test_data.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.data'`.
 
-- [ ] **Step 4: Implement `src/slm/data.py`**
+- [x] **Step 4: Implement `src/slm/data.py`**
 
 ```python
 import torch
@@ -491,12 +491,12 @@ def load_tinystories(split: str = "train", limit: int | None = None) -> list[str
     return [row["text"] for row in ds]
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_data.py -v`
 Expected: PASS (3 passed).
 
-- [ ] **Step 6: Update docs**
+- [x] **Step 6: Update docs**
 
 `CONCEPTS.md`: add **context window / sequence length**, **batch**, **next-token target (the shift-by-one)**. Add `DEVLOG.md` + `CHANGELOG.md` entries. Note in `REPRODUCE.md` how to print a real batch.
 

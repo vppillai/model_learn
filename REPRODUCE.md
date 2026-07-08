@@ -30,3 +30,19 @@ PYTHONPATH=src uv run python labs/lab01_bpe_by_hand.py
 ```
 Watch the `labs/lab01_bpe_by_hand.py` output: as `vocab_size` grows, common
 chunks like `"the "`/`"cat"` collapse from multiple tokens into one.
+
+## Milestone: real batches
+```bash
+uv run pytest tests/test_data.py -v
+PYTHONPATH=src uv run python -c "
+from slm.tokenizer import train_tokenizer
+from slm.data import tokenize_texts, get_batch
+lines = open('tests/fixtures/tiny_stories.txt').read().splitlines()
+tok = train_tokenizer(lines * 20, vocab_size=300, save_path='/tmp/task3_tok.json')
+stream = tokenize_texts(tok, lines)
+x, y = get_batch(stream, batch_size=2, context_len=12, seed=0)
+print(tok.decode(x[0].tolist()))
+print(tok.decode(y[0].tolist()))
+"
+```
+The two printed lines are the same text, `y` slid forward by one token.

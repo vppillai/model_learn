@@ -81,3 +81,23 @@ that works reasonably well everywhere it appears. Disambiguating meaning
 attention, which combines this fixed starting vector with the tokens
 actually around it. See `DEVLOG.md` (2026-07-07) for a live before/after
 demo of one row changing after two gradient steps with conflicting targets.
+
+## context window / sequence length (`context_len`)
+How many tokens the model looks at (and predicts within) in one forward
+pass. `TOY` uses 128; `SMALL` uses 512. Longer context lets the model use
+more preceding text to predict the next token, but attention cost grows
+with sequence length, so it's not free to make arbitrarily long.
+
+## batch
+Multiple independent training examples processed together in one forward
+pass (shape `(batch_size, context_len)`), so the GPU/CPU processes many
+sequences in parallel per gradient step instead of one at a time. Lab: see
+`get_batch()` in `src/slm/data.py`.
+
+## next-token target (the shift-by-one)
+Language modeling's training signal: for input `x` (a window of tokens),
+the target `y` is the *same window shifted one position left* — at every
+position, `y` holds whatever token actually came next. One sequence yields
+a supervised example at every position simultaneously. Confirmed directly
+in `DEVLOG.md` (2026-07-07): decoding `x[0]` and `y[0]` from a real batch
+gives the same text slid forward by exactly one token.

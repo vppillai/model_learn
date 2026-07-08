@@ -93,3 +93,18 @@ the embedding table learns despite being context-blind." Also broke down
 feed-forward becomes the largest component (51.4%) as the model scales up,
 since attention/FFN cost scales with `n_layers` while the embedding table
 does not.
+
+## 2026-07-07 — Task 3: data pipeline
+
+- Implemented `tokenize_texts` (flattens texts into one token stream with
+  `EOT_ID=0` inserted between documents) and `get_batch` (random windowing,
+  `(x, y)` shifted by one, deterministic given a `seed`) in `src/slm/data.py`.
+  All 3 tests pass first try.
+- Added `tests/fixtures/tiny_stories.txt` (30 short lines) so unit tests
+  never touch the real network/dataset — `load_tinystories()` (real HF
+  dataset loader) is exercised only by actual training runs later, per the
+  plan's "tests never download the internet" constraint.
+- Printed a real batch and decoded it back to text to see the shift-by-one
+  target directly: with `context_len=12`, `x[0]` decoded to
+  `'kled above as the t'` and `y[0]` decoded to `'led above as the tw'` —
+  the same window, slid forward by exactly one token.
