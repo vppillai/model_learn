@@ -135,3 +135,48 @@ workspace (`ffn_hidden`), applies a gated nonlinearity, then projects back
 down to `d_model`. No cross-token interaction here — purely per-token
 processing. This block is also the future Mixture-of-Experts "expert"
 (Phase 3).
+
+## tied-embedding "echo" bias at initialization
+A surprising, real property of tied-embedding + pre-norm-residual
+transformers: **before any training**, the model strongly favors predicting
+the *most recently seen token again*. Cause: residual connections keep the
+input token's embedding direction dominant in the final hidden state, and
+because `lm_head` reuses that same embedding matrix (weight tying), that
+token's self-dot-product logit vastly outscores every other token's
+cross-dot-product logit (a ~30-40 logit gap, saturating softmax to
+`max_prob ≈ 1.0`). Confirmed empirically across `TOY` and `SMALL`, multiple
+seeds, and varied (non-repeated) inputs; disappears entirely when
+`tie_embeddings=False`. Not a bug — a real architectural property that
+training overwrites. See `DEVLOG.md` (2026-07-07) for the full
+investigation. Lab: `labs/lab03_gibberish.py` shows it live — prompting
+with `"Once upon a time"` degenerates into repeating `"time"` forever.
+
+## logits
+The raw, unnormalized scores the model outputs for each possible next
+token — one number per vocabulary entry, before `softmax` turns them into a
+probability distribution. `LlamaSLM.forward()` returns logits of shape
+`(batch, context_len, vocab_size)`.
+
+## pre-norm residual block
+The `Block` pattern: `x = x + attn(norm(x)); x = x + mlp(norm(x))`. The
+*residual* (`x = x + ...`) means each sub-layer only has to learn a
+*correction* to add on top of its input, rather than reconstruct the whole
+representation from scratch — this is also why the original input's
+direction persists strongly through the stack (see the tied-embedding echo
+bias above). "Pre-norm" means normalization happens *before* each sub-layer
+rather than after, which is more stable to train at depth than the
+original post-norm Transformer design.
+
+## autoregressive generation
+Generating text one token at a time: run the model, sample a next token
+from its output distribution, append it to the sequence, repeat. Each new
+token becomes part of the input for predicting the next one. Lab:
+`generate()` in `src/slm/model.py`.
+
+## temperature / top-k sampling
+Two knobs that reshape the next-token probability distribution before
+sampling. Temperature divides logits before `softmax`: low temperature
+sharpens the distribution (more confident/repetitive), high temperature
+flattens it (more random). Top-k zeroes out every token outside the `k`
+most likely, preventing very unlikely tokens from ever being picked. Lab
+05 (Task 5) explores both in more depth.

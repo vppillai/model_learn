@@ -120,3 +120,50 @@ does not.
   bit-for-bit identical (`0.000000` difference); only position 5 changed —
   direct numeric proof that the causal mask blocks any influence from
   future tokens.
+
+## 2026-07-07 — Task 4b: assemble LlamaSLM + generate (with a real debugging detour)
+
+- Appended `Block` (pre-norm residual) and `LlamaSLM` (embed → layers →
+  norm → tied `lm_head`, plus `generate()`) to `src/slm/model.py`.
+- **Gotcha 3 — the plan's `test_untrained_output_is_high_entropy` failed**,
+  and not for a trivial reason. Investigated with systematic debugging
+  (root cause before fix):
+  - Symptom: `probs.max()` was exactly `1.0` (not "somewhat peaked" — fully
+    saturated), for the degenerate all-token-0 input the plan's test used.
+  - Hypothesis 1 (repetition-specific artifact): ruled out — varied,
+    non-repeated random inputs showed the identical saturation.
+  - Hypothesis 2 (something special about token id 0): ruled out —
+    embedding row norms for token 0 were unremarkable (7.8-10.8 range, no
+    outlier); with independent seeds, the dominant predicted token was
+    always *whichever token was last in the input*, not always id 0.
+  - Root cause confirmed: **weight tying**. Pre-norm residual connections
+    keep the most recent token's embedding direction dominant through the
+    stack; `lm_head` reuses that exact embedding matrix, so that token's
+    self-dot-product logit crushes every other token's cross-dot-product
+    logit (~30-40 logit gap). Verified by setting `tie_embeddings=False`
+    on an otherwise-identical config: `max_prob` dropped to ~0.002-0.005
+    (near the 1/2048 uniform baseline) and the echo pattern vanished.
+    Verified the bias persists at `SMALL` scale too (6 layers, `d_model=384`)
+    — not a `TOY`-only artifact of extreme smallness.
+  - Conclusion: not a code bug. The *test's assumption* ("untrained ⇒
+    near-uniform") is false for this architecture as specified (tied
+    embeddings, matching real Llama). The design spec's actual milestone
+    goal (§7, milestone 3 — "generates gibberish → proves wiring") doesn't
+    require near-uniformity.
+  - Fix: replaced the assertion with one that checks what's actually true
+    and still meaningfully guards against a broken/dead forward pass — the
+    output is a valid probability distribution, and it changes across
+    different inputs (proves the wiring is really connected end-to-end).
+    Renamed to `test_untrained_forward_is_valid_and_input_dependent`.
+  - Landed as a `CONCEPTS.md` entry: "tied-embedding echo bias at
+    initialization."
+- Lab 02 (`labs/lab02_attention_peek.py`) confirms the lower-triangular
+  causal attention pattern visually.
+- Lab 03 (`labs/lab03_gibberish.py`) turned into a second, very visible
+  confirmation of the echo bias: prompting the untrained model with
+  `"Once upon a time"` degenerates into `"time time time time..."` forever.
+  Separately, seeding generation from `<|endoftext|>` (id 0) — the
+  worst-case trigger — produces 20+ repeats of token 0, which `decode()`
+  renders as an empty string (tokenizers hide special tokens by default),
+  so the lab prints raw token ids alongside decoded text to make this
+  visible rather than confusing.

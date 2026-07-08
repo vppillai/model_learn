@@ -75,3 +75,56 @@ class SwiGLU(nn.Module):
 
     def forward(self, x):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+class Block(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.norm1 = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.attn = Attention(cfg)
+        self.norm2 = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.mlp = SwiGLU(cfg)
+
+    def forward(self, x, cos, sin):
+        x = x + self.attn(self.norm1(x), cos, sin)
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class LlamaSLM(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
+        self.norm = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+        if cfg.tie_embeddings:
+            self.lm_head.weight = self.embed_tokens.weight
+        cos, sin = build_rope_cache(cfg.head_dim, cfg.context_len, cfg.rope_theta)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
+
+    def forward(self, idx):
+        B, T = idx.shape
+        x = self.embed_tokens(idx)
+        cos, sin = self.rope_cos[:T], self.rope_sin[:T]
+        for layer in self.layers:
+            x = layer(x, cos, sin)
+        x = self.norm(x)
+        return self.lm_head(x)
+
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.cfg.context_len:]
+            logits = self(idx_cond)[:, -1, :]
+            if temperature != 1.0:
+                logits = logits / max(temperature, 1e-6)
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs = torch.softmax(logits, dim=-1)
+            nxt = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, nxt], dim=1)
+        return idx

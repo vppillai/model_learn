@@ -685,7 +685,7 @@ git commit -m "feat: model components (RMSNorm, RoPE, causal attention, SwiGLU)"
 - Consumes: components from Task 4a; `ModelConfig`.
 - Produces: `class Block(nn.Module)` (pre-norm: `x = x + attn(norm1(x)); x = x + mlp(norm2(x))`); `class LlamaSLM(nn.Module)` with attributes `embed_tokens, layers, norm, lm_head` (tied), `forward(idx) -> logits (B,T,vocab)`, and `@torch.no_grad() generate(idx, max_new_tokens, temperature=1.0, top_k=None) -> idx`.
 
-- [ ] **Step 1: Write the failing test** in `tests/test_model.py`
+- [x] **Step 1: Write the failing test** in `tests/test_model.py`
 
 ```python
 import torch
@@ -724,12 +724,12 @@ def test_untrained_output_is_high_entropy():
     assert probs.max().item() < 0.5
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_model.py -v`
 Expected: FAIL with `ImportError: cannot import name 'LlamaSLM'`.
 
-- [ ] **Step 3: Append to `src/slm/model.py`**
+- [x] **Step 3: Append to `src/slm/model.py`**
 
 ```python
 class Block(nn.Module):
@@ -785,12 +785,12 @@ class LlamaSLM(nn.Module):
         return idx
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_model.py -v`
 Expected: PASS (4 passed).
 
-- [ ] **Step 5: Write Lab 02 (attention peek)** `labs/lab02_attention_peek.py`
+- [x] **Step 5: Write Lab 02 (attention peek)** `labs/lab02_attention_peek.py`
 
 ```python
 """Lab 02 — print attention weights for one short sequence.
@@ -822,7 +822,7 @@ print("\nNote the upper triangle is 0.00 — that's the causal mask: a token")
 print("can only attend to itself and earlier tokens.")
 ```
 
-- [ ] **Step 6: Write Lab 03 (gibberish)** `labs/lab03_gibberish.py`
+- [x] **Step 6: Write Lab 03 (gibberish)** `labs/lab03_gibberish.py`
 
 ```python
 """Lab 03 — an UNTRAINED model already runs; it just talks nonsense.
@@ -848,12 +848,12 @@ print(decode(tok, out[0].tolist()))
 print("\n^ Gibberish — but it generated! The pipeline works end-to-end.")
 ```
 
-- [ ] **Step 7: Run both Labs**
+- [x] **Step 7: Run both Labs**
 
 Run: `python labs/lab02_attention_peek.py` then `python labs/lab03_gibberish.py`
 Expected: Lab 02 shows a lower-triangular attention matrix; Lab 03 prints reconstructable-but-meaningless text.
 
-- [ ] **Step 8: Update docs**
+- [x] **Step 8: Update docs**
 
 `CONCEPTS.md`: finalize **embedding**, **logits**, **pre-norm residual block**, **autoregressive generation**, **temperature / top-k sampling** (note Lab 05 will go deeper). `DEVLOG.md`: record the "untrained gibberish" milestone with a copied sample. `CHANGELOG.md` line. `REPRODUCE.md`: add the gibberish milestone (run Lab 03).
 
