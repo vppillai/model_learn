@@ -222,3 +222,37 @@ does not.
   `fixed_batch=False` draws a fresh random batch each step; and 213K params
   is capacity-limited). Real coherence is the job of the SMALL Colab run.
   Artifacts (gitignored): `checkpoints/{toy.pt,toy_tok.json,toy_loss.csv,toy_loss.png}`.
+
+## 2026-07-07 — Task 6 Half A: Colab notebook authored (run pending, Opus 4.8)
+
+Task 6 is a handoff: the `small` run needs a Colab GPU (browser + Google
+account), so this session authored everything needed to run it and left the
+actual run to the user. Authored `notebooks/colab_train.ipynb` (9 cells) and
+`notebooks/README.md` (runbook).
+
+Three real bugs/limits caught and fixed *before* handoff, all of which the
+CPU toy run masked:
+- **Device portability.** The plan's cell used `torch.set_default_device("cuda")`,
+  which would crash `get_batch` — it builds indices with a CPU `torch.Generator`,
+  and `torch.randint(..., generator=cpu_gen)` errors when the default device is
+  CUDA. Fixed properly in `train.py`: it now moves each batch to the model's
+  device (`next(model.parameters()).device`) and `_print_sample` seeds its start
+  tensor on that device too. No `set_default_device` needed; CPU path is a no-op.
+- **Per-step re-tensorization.** `get_batch` did `torch.tensor(data)` every call.
+  Fine at 470K tokens (toy); at Colab scale (tens of millions) it re-copies the
+  whole stream every step and dominates runtime. Fixed: `train()` tensorizes the
+  stream once before the loop; `get_batch` now accepts a tensor (or list, for
+  the tests) and indexes it directly.
+- **RAM.** `tokenize_texts` returns a Python `list[int]`; the *full* TinyStories
+  (~470M tokens) as a Python list is ~13GB and would OOM Colab's ~12GB. The
+  notebook uses `limit=200_000` stories (~47M tokens) — ample for coherent
+  output from a 14M model, and the deliberate "finalize small config before the
+  Colab run" call from spec §16.
+
+Notebook config: `SMALL`, `lr=6e-4`, `warmup_steps=200`, `max_steps=20000`,
+`batch_size=64`, `context_len=512`, fp32. `requirements.txt` correctly omits
+torch so Colab keeps its GPU build (the Task-1 gotcha-2 fix pays off here).
+
+**Pending (Half B / handoff):** push repo to a remote, run on Colab T4,
+download `small.{pt,tok.json,loss.png}` into `checkpoints/`, then record the
+real final loss + a verbatim story here and finish Task 6 Steps 4-6.

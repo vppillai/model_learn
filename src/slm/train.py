@@ -42,9 +42,16 @@ def train(model: LlamaSLM, data: list[int], cfg: TrainConfig, tok=None):
     history: list[tuple[int, float]] = []
     rows: list[tuple[int, float]] = []
     model.train()
+    # Batches are built on CPU (get_batch uses a CPU RNG for determinism);
+    # move each to the model's device so the same code runs on CPU or GPU.
+    device = next(model.parameters()).device
+    # Tensorize the token stream ONCE (not per-step): at Colab scale the stream
+    # is tens of millions of tokens and re-copying it every call would dominate.
+    data_t = data if isinstance(data, torch.Tensor) else torch.tensor(data, dtype=torch.long)
     for step in range(cfg.max_steps + 1):
         seed = cfg.seed if cfg.fixed_batch else cfg.seed + step
-        x, y = get_batch(data, cfg.batch_size, cfg.context_len, seed=seed)
+        x, y = get_batch(data_t, cfg.batch_size, cfg.context_len, seed=seed)
+        x, y = x.to(device), y.to(device)
         logits = model(x)
         loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
         for g in opt.param_groups:
@@ -67,7 +74,8 @@ def train(model: LlamaSLM, data: list[int], cfg: TrainConfig, tok=None):
 def _print_sample(model, tok, n=40):
     from slm.tokenizer import decode
     model.eval()
-    start = torch.zeros((1, 1), dtype=torch.long)
+    device = next(model.parameters()).device
+    start = torch.zeros((1, 1), dtype=torch.long, device=device)
     out = model.generate(start, max_new_tokens=n, temperature=0.8, top_k=40)
     print("  sample:", decode(tok, out[0].tolist()).replace("\n", " ")[:160])
     model.train()

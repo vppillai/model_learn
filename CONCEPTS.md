@@ -218,6 +218,15 @@ so the file can be loaded with `weights_only=True` (never unpickle
 arbitrary objects from a downloaded model file — that's a code-execution
 risk). See `save_checkpoint`/`load_checkpoint` in `src/slm/train.py`.
 
+## device (CPU vs GPU) / device portability
+Tensors and models live on a specific *device* — the CPU or a CUDA GPU — and
+an operation needs all its inputs on the same device. A GPU does the many
+small matrix multiplies of training massively in parallel, so the `small`
+run is minutes-per-epoch on a GPU vs hours-plus on CPU. "Device-portable"
+code runs unchanged on either: our `train()` moves each batch to the model's
+own device, so the same function trains `toy` on CPU and `small` on a Colab
+GPU with no edits. See `train()` in `src/slm/train.py`.
+
 ## overfitting one batch (a debugging technique)
 Deliberately training on a single fixed batch over and over until loss →
 ~0. It's the fastest proof that learning *works at all*: if a model can't

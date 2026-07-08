@@ -1138,7 +1138,7 @@ git commit -m "feat: training loop + overfit test + sampling; toy CPU run produc
 - Consumes: the entire `src/slm` package (cloned into Colab).
 - Produces: a trained `small` checkpoint (`small.pt`) + tokenizer (`small_tok.json`) downloaded back locally into `checkpoints/`.
 
-- [ ] **Step 1: Author the notebook** `notebooks/colab_train.ipynb` with these cells (use a notebook tool or write JSON; content of each cell below):
+- [x] **Step 1: Author the notebook** `notebooks/colab_train.ipynb` with these cells (use a notebook tool or write JSON; content of each cell below):
 
 Cell 1 (setup):
 ```python
@@ -1181,7 +1181,7 @@ files.download("checkpoints/small_tok.json")
 files.download("checkpoints/small_loss.png")
 ```
 
-- [ ] **Step 2: Write `notebooks/README.md`** documenting: open in Colab → Runtime → change to GPU (T4) → run cells top to bottom → download the 3 files into local `checkpoints/`. Note the free-tier session limit and that `max_steps` can be lowered if the session is at risk of timing out; record the actual final `max_steps` and loss in `DEVLOG.md`.
+- [x] **Step 2: Write `notebooks/README.md`** documenting: open in Colab → Runtime → change to GPU (T4) → run cells top to bottom → download the 3 files into local `checkpoints/`. Note the free-tier session limit and that `max_steps` can be lowered if the session is at risk of timing out; record the actual final `max_steps` and loss in `DEVLOG.md`.
 
 - [ ] **Step 3: Run the notebook on Colab (manual)**
 

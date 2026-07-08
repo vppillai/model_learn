@@ -81,3 +81,17 @@ word-like, then story-shaped fragments. Generate from the checkpoint:
 PYTHONPATH=src uv run python -m slm.sample checkpoints/toy.pt checkpoints/toy_tok.json "Once upon a time"
 ```
 (Toy quality stays rough — coherence comes with the `small` Colab run.)
+
+## Milestone: coherent stories (`small` model on Colab GPU)
+The `small` (~14M param) model trains on a GPU, not local CPU. Full
+instructions: `notebooks/README.md`. In short:
+1. Push this repo to a remote (GitHub) so Colab can clone it.
+2. Open `notebooks/colab_train.ipynb` in Colab, set a T4 GPU, edit `REPO_URL`,
+   run all cells (~30–60 min).
+3. Download `small.pt`, `small_tok.json`, `small_loss.png` into `checkpoints/`.
+4. Verify locally on CPU:
+```bash
+PYTHONPATH=src uv run python -m slm.sample checkpoints/small.pt checkpoints/small_tok.json "Once upon a time"
+```
+Expected: a short, mostly-coherent children's story. (Final loss and an
+example story are recorded in `DEVLOG.md` after the run.)

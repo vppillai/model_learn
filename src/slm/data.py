@@ -12,9 +12,12 @@ def tokenize_texts(tok: Tokenizer, texts: list[str]) -> list[int]:
     return stream
 
 
-def get_batch(data: list[int], batch_size: int, context_len: int, seed: int):
+def get_batch(data, batch_size: int, context_len: int, seed: int):
+    # Accept a pre-built tensor (cheap) or a list (converted once). At scale,
+    # re-tensorizing a multi-million-token list every call dominates runtime,
+    # so train() passes a tensor built once before the loop.
     g = torch.Generator().manual_seed(seed)
-    t = torch.tensor(data, dtype=torch.long)
+    t = data if isinstance(data, torch.Tensor) else torch.tensor(data, dtype=torch.long)
     max_start = len(t) - context_len - 1
     assert max_start > 0, "not enough tokens for one context window"
     starts = torch.randint(0, max_start, (batch_size,), generator=g)
