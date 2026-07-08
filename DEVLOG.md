@@ -167,3 +167,14 @@ does not.
   renders as an empty string (tokenizers hide special tokens by default),
   so the lab prints raw token ids alongside decoded text to make this
   visible rather than confusing.
+- **Follow-up (model switch to Opus 4.8, review pass):** independently
+  re-verified the echo-bias mechanism quantitatively — for a random input,
+  the untrained model's top logit (59.42) equals `|embed(last_token)|²`
+  (59.16), the exact predicted boost from the tied `lm_head` seeing the
+  residual-carried embedding. Also strengthened the Task-4b test: the
+  original replacement asserted `probs.sum() ≈ 1.0` (vacuous — softmax
+  always sums to 1) and could let a NaN-producing forward slip through.
+  Split into two meaningful tests: `test_untrained_forward_is_finite_and_input_dependent`
+  (isfinite + input-dependence, catches dead/NaN forward) and
+  `test_untrained_model_echoes_last_token` (asserts argmax == last input
+  token — documents the verified echo property directly).

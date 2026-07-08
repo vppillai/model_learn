@@ -24,19 +24,31 @@ def test_generate_extends_sequence():
     assert out.shape == (1, 8)
 
 
-def test_untrained_forward_is_valid_and_input_dependent():
-    # An untrained model does NOT produce a near-uniform distribution: tied
-    # embeddings + the pre-norm residual stream make it strongly favor
-    # echoing back the most recently seen token (confirmed empirically —
-    # see DEVLOG.md 2026-07-07). That's expected, architecture-driven
-    # behavior, not garbage. The real "wiring works" sanity check is that
-    # the output is a valid probability distribution and actually depends
-    # on the input (i.e. the forward pass isn't silently constant/dead).
+def test_untrained_forward_is_finite_and_input_dependent():
+    # Sanity of the wiring (not the weights): the forward pass must produce
+    # finite logits and actually depend on the input — i.e. it is not
+    # silently constant/dead or emitting NaNs.
     torch.manual_seed(0)
     m = LlamaSLM(TOY)
     idx_a = torch.randint(0, TOY.vocab_size, (1, 4))
     idx_b = torch.randint(0, TOY.vocab_size, (1, 4))
-    probs_a = torch.softmax(m(idx_a)[0, -1], dim=-1)
-    probs_b = torch.softmax(m(idx_b)[0, -1], dim=-1)
-    assert torch.allclose(probs_a.sum(), torch.tensor(1.0), atol=1e-4)
-    assert not torch.allclose(probs_a, probs_b)
+    logits_a = m(idx_a)[0, -1]
+    logits_b = m(idx_b)[0, -1]
+    assert torch.isfinite(logits_a).all()          # no NaN/inf
+    assert not torch.allclose(logits_a, logits_b)  # depends on input
+
+
+def test_untrained_model_echoes_last_token():
+    # An untrained model does NOT produce a near-uniform distribution. Tied
+    # embeddings + the pre-norm residual stream carry the last token's
+    # embedding straight to the (tied) lm_head, so its self-dot-product
+    # |embed(last)|^2 dominates every other token's logit — the model's
+    # top prediction is the token it just saw. This is expected,
+    # architecture-driven behavior, verified quantitatively in DEVLOG.md
+    # (top logit ~= |embed(last)|^2). Training (Task 5) overwrites it.
+    torch.manual_seed(0)
+    m = LlamaSLM(TOY)
+    idx = torch.randint(0, TOY.vocab_size, (1, 6))
+    last = idx[0, -1].item()
+    logits = m(idx)[0, -1]
+    assert logits.argmax().item() == last
