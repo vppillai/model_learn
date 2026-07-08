@@ -24,9 +24,21 @@ def get_batch(data: list[int], batch_size: int, context_len: int, seed: int):
 
 
 def load_tinystories(split: str = "train", limit: int | None = None) -> list[str]:
-    """Real dataset loader for training runs (not used in unit tests)."""
+    """Real dataset loader for training runs (not used in unit tests).
+
+    When `limit` is set (e.g. the local toy run), stream the dataset and take
+    only the first `limit` stories, so we avoid downloading the full ~1.9GB
+    corpus just to use a few thousand. When `limit` is None (the Colab `small`
+    run), download the whole split.
+    """
     from datasets import load_dataset
-    ds = load_dataset("roneneldan/TinyStories", split=split)
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = load_dataset("roneneldan/TinyStories", split=split, streaming=True)
+        out = []
+        for row in ds:
+            out.append(row["text"])
+            if len(out) >= limit:
+                break
+        return out
+    ds = load_dataset("roneneldan/TinyStories", split=split)
     return [row["text"] for row in ds]

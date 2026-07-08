@@ -46,3 +46,38 @@ print(tok.decode(y[0].tolist()))
 "
 ```
 The two printed lines are the same text, `y` slid forward by one token.
+
+## Milestone: learning works (overfit one batch)
+```bash
+uv run pytest tests/test_train.py -v
+```
+`test_overfit_one_batch_drives_loss_down` trains on one fixed batch and
+asserts loss collapses toward 0 — the proof that gradient flow works.
+
+## Milestone: toy training run (local CPU, ~2 min)
+```bash
+PYTHONPATH=src uv run python - <<'PY'
+import torch
+from slm.config import TOY
+from slm.model import LlamaSLM
+from slm.tokenizer import train_tokenizer
+from slm.data import tokenize_texts, load_tinystories
+from slm.train import TrainConfig, train, plot_loss
+
+texts = load_tinystories("train", limit=2000)          # streams; no full download
+tok = train_tokenizer(texts, vocab_size=TOY.vocab_size, save_path="checkpoints/toy_tok.json")
+data = tokenize_texts(tok, texts)
+model = LlamaSLM(TOY)
+cfg = TrainConfig(lr=3e-3, warmup_steps=50, max_steps=800, batch_size=32,
+                  context_len=TOY.context_len, log_every=50, sample_every=200,
+                  ckpt_path="checkpoints/toy.pt")
+train(model, data, cfg, tok=tok)
+plot_loss("checkpoints/toy_loss.csv", "checkpoints/toy_loss.png")
+PY
+```
+Expected: loss falls ~62 → ~4.3; printed samples drift from gibberish toward
+word-like, then story-shaped fragments. Generate from the checkpoint:
+```bash
+PYTHONPATH=src uv run python -m slm.sample checkpoints/toy.pt checkpoints/toy_tok.json "Once upon a time"
+```
+(Toy quality stays rough — coherence comes with the `small` Colab run.)

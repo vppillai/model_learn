@@ -1,3 +1,4 @@
+import os
 from typing import Iterable
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -19,6 +20,7 @@ def train_tokenizer(texts: Iterable[str], vocab_size: int, save_path: str) -> To
         show_progress=False,
     )
     tok.train_from_iterator(list(texts), trainer=trainer)
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     tok.save(save_path)
     return tok
 

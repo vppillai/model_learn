@@ -178,5 +178,49 @@ Two knobs that reshape the next-token probability distribution before
 sampling. Temperature divides logits before `softmax`: low temperature
 sharpens the distribution (more confident/repetitive), high temperature
 flattens it (more random). Top-k zeroes out every token outside the `k`
-most likely, preventing very unlikely tokens from ever being picked. Lab
-05 (Task 5) explores both in more depth.
+most likely, preventing very unlikely tokens from ever being picked. Lab:
+`labs/lab05_sampling.py` (same 6 logits at temp 0.2/0.8/1.5 — 0.2 puts 99%
+on the top token, 1.5 flattens to 0.46/0.24/0.12/...).
+
+## loss / cross-entropy
+The single number measuring how wrong the model's predictions are: it
+compares the predicted probability distribution against the actual next
+token, penalizing confident-and-wrong far more than uncertain. Lower =
+better. A useful baseline: a model that guesses uniformly over a
+`vocab_size`-token vocabulary scores `ln(vocab_size)` (≈7.6 for 2048). Our
+untrained model *starts above that* (~62) because the echo bias makes it
+confidently wrong, not merely uncertain. Lab: `train()` in `src/slm/train.py`.
+
+## optimizer / AdamW
+The algorithm that actually updates each parameter using its gradient.
+AdamW adapts the step size per-parameter (using running averages of recent
+gradients) and applies weight decay to gently pull weights toward zero
+(regularization). It's the default choice for training transformers.
+
+## learning-rate schedule (warmup + cosine decay)
+The learning rate isn't constant. It ramps up linearly from ~0 over the
+first `warmup_steps` (so early, wild gradients don't blow up the freshly
+random weights), then decays smoothly along a cosine curve back toward 0
+(so late training takes small, careful steps to settle). See `lr_at()` in
+`src/slm/train.py`.
+
+## gradient clipping
+A safety cap on the total magnitude of the gradient each step
+(`grad_clip`). If one freak batch produces an enormous gradient, clipping
+scales it down before the optimizer step, preventing a single update from
+yanking the weights off a cliff.
+
+## checkpoint
+A saved snapshot of the model — its learned weights (`state_dict`) plus the
+config needed to rebuild its architecture — so training can be resumed or
+the model loaded for inference later. We store the config as a plain dict
+so the file can be loaded with `weights_only=True` (never unpickle
+arbitrary objects from a downloaded model file — that's a code-execution
+risk). See `save_checkpoint`/`load_checkpoint` in `src/slm/train.py`.
+
+## overfitting one batch (a debugging technique)
+Deliberately training on a single fixed batch over and over until loss →
+~0. It's the fastest proof that learning *works at all*: if a model can't
+even memorize one batch, gradient flow / loss / wiring is broken. Only once
+this passes is it worth spending time on a real dataset. See
+`test_overfit_one_batch_drives_loss_down` in `tests/test_train.py`.

@@ -878,7 +878,7 @@ git commit -m "feat: assemble LlamaSLM + generate; untrained-gibberish milestone
 - Consumes: `LlamaSLM`, `ModelConfig`, `get_batch`, tokenizer.
 - Produces: `TrainConfig` dataclass (`lr, warmup_steps, max_steps, batch_size, grad_clip, weight_decay, log_every, sample_every, ckpt_path, seed`); `lr_at(step, cfg) -> float` (cosine schedule with linear warmup); `train(model, data, train_cfg, tok=None) -> list[tuple[int,float]]` (returns `(step, loss)` history, writes checkpoints + `loss_log.csv`, prints a sample every `sample_every`); `save_checkpoint(model, model_cfg, path)` / `load_checkpoint(path) -> (model, model_cfg)`; `plot_loss(csv_path, out_png)`. `sample.py` exposes `generate_text(ckpt_path, tok_path, prompt, max_new_tokens, temperature, top_k) -> str`.
 
-- [ ] **Step 1: Write the failing test** in `tests/test_train.py`
+- [x] **Step 1: Write the failing test** in `tests/test_train.py`
 
 ```python
 import torch
@@ -910,12 +910,12 @@ def test_overfit_one_batch_drives_loss_down(tmp_path):
     assert last_loss < 1.0                 # nearly memorized the batch
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_train.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.train'`.
 
-- [ ] **Step 3: Implement `src/slm/train.py`**
+- [x] **Step 3: Implement `src/slm/train.py`**
 
 ```python
 import csv
@@ -1044,12 +1044,12 @@ def plot_loss(csv_path: str, out_png: str):
     print("wrote", out_png)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_train.py -v`
 Expected: PASS (2 passed). The overfit test is the proof that learning works.
 
-- [ ] **Step 5: Implement `src/slm/sample.py`**
+- [x] **Step 5: Implement `src/slm/sample.py`**
 
 ```python
 import torch
@@ -1074,7 +1074,7 @@ if __name__ == "__main__":
     print(generate_text(ck, tk, prompt))
 ```
 
-- [ ] **Step 6: Write Lab 05 (sampling)** `labs/lab05_sampling.py`
+- [x] **Step 6: Write Lab 05 (sampling)** `labs/lab05_sampling.py`
 
 ```python
 """Lab 05 — how temperature and top_k reshape the next-token distribution.
@@ -1090,7 +1090,7 @@ print("\nLow temp -> peaky (greedy, repetitive). High temp -> flat (creative,")
 print("risky). top_k just zeroes everything outside the k most likely tokens.")
 ```
 
-- [ ] **Step 7: Do a real toy training run on local CPU**
+- [x] **Step 7: Do a real toy training run on local CPU**
 
 Run:
 ```bash

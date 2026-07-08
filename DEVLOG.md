@@ -178,3 +178,47 @@ does not.
   (isfinite + input-dependence, catches dead/NaN forward) and
   `test_untrained_model_echoes_last_token` (asserts argmax == last input
   token — documents the verified echo property directly).
+
+## 2026-07-07 — Task 5: training loop + overfit + toy run (Opus 4.8)
+
+- Implemented `src/slm/train.py`: `TrainConfig`, `lr_at` (clean linear-warmup
+  + cosine-decay — skipped the plan's deliberately-convoluted first draft),
+  `train` (AdamW betas=(0.9,0.95), per-step LR schedule, grad clipping, CSV
+  loss log, periodic sample callback), `save_checkpoint`/`load_checkpoint`
+  (weights_only-safe: config stored as a plain dict), `plot_loss`. Also
+  `src/slm/sample.py` (`generate_text`) and `labs/lab05_sampling.py`.
+- **Milestone: learning works (overfit one batch).** With a single fixed
+  batch repeated, loss collapsed 62.2 → 0.0000 by ~step 50. The starting
+  loss of ~62 is ~8x worse than the uniform-guess baseline `ln(2048)≈7.6` —
+  a direct, quantitative fingerprint of the Task-4b echo bias (the model is
+  confidently wrong, betting on the current token instead of the next). The
+  first ~50 steps are mostly the optimizer *unlearning* that bias.
+- **Gotcha 4 — first toy run crashed:** `train_tokenizer` called
+  `tok.save("checkpoints/toy_tok.json")` before `checkpoints/` existed
+  (`Exception: No such file or directory`). Root cause: `train_tokenizer`
+  wrote a file without ensuring its parent dir, unlike `save_checkpoint`/
+  `_write_csv` which both `os.makedirs` first. Fixed at the source — added
+  `os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)` to
+  `train_tokenizer`. Existing tokenizer tests use `tmp_path` (already
+  exists) so were unaffected.
+- **Also enhanced `load_tinystories`** to *stream* when a `limit` is given,
+  so the local toy run pulls only 2000 stories instead of downloading the
+  full ~1.9GB corpus. Full download still happens for `limit=None` (the
+  Colab `small` run). Same signature.
+- **Milestone: toy training run (local CPU).** 2000 TinyStories, vocab 2048,
+  TOY model, 800 steps, ~2 min on CPU. Loss: 62.4 → 12.1 (step 50) → 6.5
+  (100) → 5.2 (200) → plateau ~4.3 (800). Samples climbed the coherence
+  ladder:
+  - step 200: "Once upon a time, there was a little girl named a saw a time.
+    She had a it was very in as and." (real words + opening grammar,
+    nonsense semantics)
+  - step 600: "Once upon a time, there was a little girl named Tim. Every
+    day excited one t adventure in the water and was so happy." (named
+    character, coherent clauses)
+  - step 800: "...She was very happy and he thought, he wanted to play with
+    her. Once upon a time there were two friends with a" (recognizable story
+    structure)
+  Loss plateaus ~4.3 and wiggles slightly (per-batch loss is noisy since
+  `fixed_batch=False` draws a fresh random batch each step; and 213K params
+  is capacity-limited). Real coherence is the job of the SMALL Colab run.
+  Artifacts (gitignored): `checkpoints/{toy.pt,toy_tok.json,toy_loss.csv,toy_loss.png}`.
