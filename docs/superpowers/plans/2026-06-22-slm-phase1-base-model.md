@@ -519,7 +519,7 @@ git commit -m "feat: data pipeline (tokenize stream + shifted batches) + fixture
 - Consumes: `ModelConfig` from Task 1.
 - Produces: `class RMSNorm(nn.Module)`; functions `build_rope_cache(head_dim, seq_len, theta) -> (cos, sin)` and `apply_rope(x, cos, sin)`; `class Attention(nn.Module)` with `forward(x, cos, sin) -> Tensor`; `class SwiGLU(nn.Module)` with `forward(x) -> Tensor`. All linears bias-free. `rotate_half` matches HF Llama.
 
-- [ ] **Step 1: Write the failing test** in `tests/test_model_components.py`
+- [x] **Step 1: Write the failing test** in `tests/test_model_components.py`
 
 ```python
 import torch
@@ -568,12 +568,12 @@ def test_swiglu_shape():
     assert mlp(x).shape == x.shape
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_model_components.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.model'`.
 
-- [ ] **Step 3: Implement components in `src/slm/model.py`**
+- [x] **Step 3: Implement components in `src/slm/model.py`**
 
 ```python
 import torch
@@ -655,12 +655,12 @@ class SwiGLU(nn.Module):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_model_components.py -v`
 Expected: PASS (4 passed).
 
-- [ ] **Step 5: Update docs**
+- [x] **Step 5: Update docs**
 
 `CONCEPTS.md`: **embedding** (placeholder note that the table comes in 4b), **RMSNorm**, **RoPE / positional encoding**, **attention / causal mask**, **SwiGLU / feed-forward**, **logits** (note: in 4b). Add `DEVLOG.md` + `CHANGELOG.md` lines.
 

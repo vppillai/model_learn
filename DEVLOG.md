@@ -108,3 +108,15 @@ does not.
   target directly: with `context_len=12`, `x[0]` decoded to
   `'kled above as the t'` and `y[0]` decoded to `'led above as the tw'` —
   the same window, slid forward by exactly one token.
+
+## 2026-07-07 — Task 4a: model components (RMSNorm, RoPE, attention, SwiGLU)
+
+- Implemented `RMSNorm`, `build_rope_cache`/`apply_rope`, `Attention`
+  (causal, RoPE-applied Q/K), and `SwiGLU` in `src/slm/model.py`. All 4
+  tests pass first try — no gotchas this task.
+- Verified causality concretely (beyond the test's assertion): ran
+  `Attention` on a 6-token sequence, perturbed only the last token by
+  `+10.0`, and diffed the outputs position-by-position. Positions 0-4 were
+  bit-for-bit identical (`0.000000` difference); only position 5 changed —
+  direct numeric proof that the causal mask blocks any influence from
+  future tokens.

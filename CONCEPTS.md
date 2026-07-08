@@ -101,3 +101,37 @@ position, `y` holds whatever token actually came next. One sequence yields
 a supervised example at every position simultaneously. Confirmed directly
 in `DEVLOG.md` (2026-07-07): decoding `x[0]` and `y[0]` from a real batch
 gives the same text slid forward by exactly one token.
+
+## RMSNorm
+A normalization layer that rescales each token's vector by its
+root-mean-square magnitude, keeping numbers in a healthy range as they flow
+through many stacked layers (unnormalized, magnitudes can drift and
+destabilize training). Cheaper cousin of LayerNorm — it skips
+mean-subtraction and only rescales — which is why Llama and most modern
+LLMs use it. Lab: `RMSNorm` in `src/slm/model.py`.
+
+## RoPE (rotary positional encoding)
+Injects word-order information into attention by *rotating* each token's
+query/key vector by an angle proportional to its position — later tokens
+rotate further. Rotation preserves a vector's length (never stretches or
+shrinks it, only spins it), which is exactly what `test_rope_preserves_shape_and_norm`
+checks. The payoff: the relationship between a rotated query and key
+depends only on their *relative* distance, not their absolute positions.
+
+## attention / causal mask
+Each token produces a Query ("what am I looking for"), Key ("what I
+offer"), and Value ("what I contain"). Attention scores every token's Query
+against every other token's Key, then blends Values weighted by those
+scores — the only place tokens exchange information. The causal mask
+forces a token to only attend to itself and earlier tokens, never future
+ones, since future tokens don't exist yet at generation time. Verified
+directly: perturbing only the last token of a 6-token sequence left
+positions 0-4's output bit-for-bit identical (see `DEVLOG.md` 2026-07-07).
+
+## SwiGLU / feed-forward
+The per-token "private thinking" step, applied right after attention lets
+tokens exchange information. Expands each token's vector into a wider
+workspace (`ffn_hidden`), applies a gated nonlinearity, then projects back
+down to `d_model`. No cross-token interaction here — purely per-token
+processing. This block is also the future Mixture-of-Experts "expert"
+(Phase 3).
