@@ -37,6 +37,17 @@ skip the clone cell, and `pip install -r requirements.txt`.
 5. Run the download cell to save `small.pt`, `small_tok.json`, and
    `small_loss.png` into your local `checkpoints/` directory.
 
+## Troubleshooting
+
+- **`ImportError: cannot import name '_center' from 'numpy._core.umath'`** (or
+  similar numpy/pandas binary errors): something upgraded numpy/pandas inside
+  the running kernel. Cell 1 installs only `datasets tokenizers` precisely to
+  avoid this — but if you hit it, do **Runtime → Restart session** and run from
+  the top. Do *not* `pip install -r requirements.txt` on Colab: that pins the
+  full transitive tree and clobbers Colab's co-tuned numpy/pandas/torch.
+- **`CUDA available: False`**: Runtime → Change runtime type → T4 GPU, then
+  restart and rerun.
+
 ## Config notes (finalized here per spec §16)
 
 - `limit=200_000` stories (~47M tokens). The current data pipeline holds the

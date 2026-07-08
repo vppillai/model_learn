@@ -256,3 +256,24 @@ torch so Colab keeps its GPU build (the Task-1 gotcha-2 fix pays off here).
 **Pending (Half B / handoff):** push repo to a remote, run on Colab T4,
 download `small.{pt,tok.json,loss.png}` into `checkpoints/`, then record the
 real final loss + a verbatim story here and finish Task 6 Steps 4-6.
+
+### 2026-07-07 — Task 6 handoff, gotcha 5: full requirements.txt breaks Colab
+
+Repo pushed to https://github.com/vppillai/model_learn (public, verified
+unauthenticated-cloneable). First Colab attempt used the notebook's original
+`pip install -r requirements.txt` and hit two problems:
+1. pip printed a wall of resolver conflicts — our full transitive pins
+   (pandas 3.0.3, numpy 2.5.1, requests 2.34.2, rich 15, fsspec 2026.4)
+   collide with Colab's co-tuned packages (google-colab, cudf, numba, ...).
+2. Cell 2 then died with `ImportError: cannot import name '_center' from
+   'numpy._core.umath'` — the numpy upgrade happened *inside a live kernel*
+   that had already imported Colab's original numpy, leaving numpy's C
+   extension and Python files at mismatched versions (broken install state).
+Root cause: `requirements.txt` is the right artifact for a *fresh, empty* uv
+venv (total reproducibility) but the *wrong* one for Colab's already-populated
+environment. Fix: notebook Cell 1 now installs only our two direct deps
+(`datasets tokenizers`); torch/numpy/pandas/matplotlib are already on Colab
+and left untouched. Added a Troubleshooting section to `notebooks/README.md`
+(numpy `_center` error → Restart session; never `-r requirements.txt` on
+Colab). Recovery for a session already in the broken state: Runtime → Restart
+session, then rerun with the fixed Cell 1.
