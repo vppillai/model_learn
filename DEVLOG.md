@@ -345,3 +345,61 @@ one. CPU→CPU load is unaffected (no-op), so existing tests still pass.
   files present.
 - Note: user pasted a write HF token into the chat during login — flagged for
   rotation. (Token stored at ~/.cache/huggingface/token for this machine.)
+
+## 2026-07-09 — Task 8: GGUF + Ollama — PHASE 1 COMPLETE 🎉
+
+The full pipeline closed: bytes → tokenizer → hand-built transformer → training
+→ HF format → GGUF → quantized → Ollama, running on CPU through the same engine
+people use for Llama.
+
+**Tools installed (treated as learning):** cmake (via pip wheel, no sudo),
+llama.cpp (clone + cmake build), Ollama (official installer). gcc already present.
+
+**GGUF sizes (the quantization ladder):** f16 27MB → Q8_0 15MB → Q4_K_M 11MB
+(16.0 / 8.51 / 6.21 bits per weight). All three generate coherent stories
+(Lab 08). Because quantization perturbs logits, each quant gives a *different*
+story for the same seed.
+
+**Ollama finish line** — `ollama run tinystories-slm "Once upon a time"`:
+> Once upon a time, there was a little girl named Lily. She loved to play
+> outside in the park. One day, she saw a big tree and wanted to climb it. But
+> when she tried to climb the tree, she slipped and fell. Her knee hurt a lot!
+> She started to cry because she couldn't reach the top of the tree. Her mom
+> came running over and asked what happened. Lily told her that she was hurt and
+> needed to rest. Her mom gave her some medicine and told her to rest when she
+> was tired. After resting, ...
+
+Five real gotchas this task (all masked until now):
+- **Gotcha 9 — OOM during the llama.cpp build.** `cmake --build -j` (all 14
+  cores) spawned too many cc1plus on llama.cpp's largest files (t5.cpp,
+  hunyuan-vl.cpp); ~11GB RAM ran out → `Killed signal terminated program
+  cc1plus`. Fix: `-j 4` caps concurrent compilers (make is incremental, so it
+  resumed from the 178 already-compiled .o files).
+- **Gotcha 10 — custom tokenizer not recognized by the GGUF converter.**
+  `convert_hf_to_gguf.py` identifies BPE tokenizers by hashing their
+  pre-tokenizer output against a hardcoded list; our custom-trained byte-level
+  BPE has a novel hash (fe391dc4...) → `NotImplementedError: BPE pre-tokenizer
+  was not recognized`. Ours IS a GPT-2-style ByteLevel BPE, so registered the
+  hash → "gpt-2" in llama.cpp's conversion/base.py (get_vocab_base_pre). The
+  GGUF then records `tokenizer.ggml.pre = gpt-2`. NOTE: this patches the cloned
+  llama.cpp checkout, not our repo — re-clone requires re-applying (documented
+  in REPRODUCE).
+- **Gotcha 11 — llama-cli runaway (2GB output file).** `llama-cli -no-cnv`
+  still dropped into an interactive REPL after generating, reading /dev/null
+  EOF and printing empty `>` prompts forever (plus the loading spinner writing
+  frames to a non-TTY). Fix: `-st` (single-turn, exits when done) + `--simple-io`.
+  Guard subprocess/one-shot runs with `timeout` + a byte cap.
+- **Gotcha 12 — Ollama installer needs zstd.** `curl … | sh` failed with "This
+  version requires zstd for extraction." Fix: `sudo apt-get install -y zstd`,
+  re-run installer. Also: on this VM systemd didn't auto-start the daemon, so
+  ran `ollama serve` manually in the background.
+- **Gotcha 13 — Ollama 0.31.2 rejects a relative FROM path.** `ollama create`
+  with `FROM ./export/…gguf` → `400 Bad Request: invalid model name` (it treats
+  the relative path as a model-name reference). Fix: absolute path in FROM.
+  scripts/Modelfile keeps the clean relative form; REPRODUCE shows a one-liner to
+  rewrite it to absolute for ollama versions that need it.
+
+Labs 07 (GGUF header teardown) and 08 (quant comparison) both run.
+
+**Phase 1 is complete.** All 9 milestone-ladder rungs hit: tokenizer → batches →
+gibberish → overfit → toy run → coherent stories → published → GGUF → Ollama.

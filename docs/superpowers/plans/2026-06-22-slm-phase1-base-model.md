@@ -241,7 +241,7 @@ source .venv/bin/activate   # or prefix commands with `uv run`
 ```
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add pyproject.toml uv.lock requirements.txt pytest.ini src tests README.md DEVLOG.md CHANGELOG.md CONCEPTS.md REPRODUCE.md
@@ -379,7 +379,7 @@ Expected: as vocab grows, `'the cat sat'` collapses from many character tokens i
 
 Add to `CONCEPTS.md`: entries for **tokenizer**, **token / token id**, **BPE (byte-pair encoding)**, **vocabulary**, **special token (`<|endoftext|>`)**, each 3–5 sentences, cross-linking `labs/lab01_bpe_by_hand.py`. Add a `DEVLOG.md` dated entry and a `CHANGELOG.md` line. Add a "Milestone: tokenizer" section to `REPRODUCE.md` with the train/encode/decode commands.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/slm/tokenizer.py tests/test_tokenizer.py labs/lab01_bpe_by_hand.py CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md
@@ -500,7 +500,7 @@ Expected: PASS (3 passed).
 
 `CONCEPTS.md`: add **context window / sequence length**, **batch**, **next-token target (the shift-by-one)**. Add `DEVLOG.md` + `CHANGELOG.md` entries. Note in `REPRODUCE.md` how to print a real batch.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/slm/data.py tests/test_data.py tests/fixtures CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md
@@ -664,7 +664,7 @@ Expected: PASS (4 passed).
 
 `CONCEPTS.md`: **embedding** (placeholder note that the table comes in 4b), **RMSNorm**, **RoPE / positional encoding**, **attention / causal mask**, **SwiGLU / feed-forward**, **logits** (note: in 4b). Add `DEVLOG.md` + `CHANGELOG.md` lines.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/slm/model.py tests/test_model_components.py CONCEPTS.md DEVLOG.md CHANGELOG.md
@@ -857,7 +857,7 @@ Expected: Lab 02 shows a lower-triangular attention matrix; Lab 03 prints recons
 
 `CONCEPTS.md`: finalize **embedding**, **logits**, **pre-norm residual block**, **autoregressive generation**, **temperature / top-k sampling** (note Lab 05 will go deeper). `DEVLOG.md`: record the "untrained gibberish" milestone with a copied sample. `CHANGELOG.md` line. `REPRODUCE.md`: add the gibberish milestone (run Lab 03).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/slm/model.py tests/test_model.py labs/lab02_attention_peek.py labs/lab03_gibberish.py CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md
@@ -1115,11 +1115,11 @@ PY
 ```
 Expected: loss decreases over steps; printed samples drift from gibberish toward word-like fragments; `checkpoints/toy_loss.png` shows a downward curve. (Toy quality stays rough — that's expected; coherence comes with the `small` Colab run.)
 
-- [ ] **Step 8: Update docs**
+- [x] **Step 8: Update docs**
 
 `CONCEPTS.md`: **loss / cross-entropy**, **optimizer / AdamW**, **learning-rate schedule (warmup + cosine)**, **gradient clipping**, **checkpoint**, **overfitting (used here deliberately as a test)**. `DEVLOG.md`: record overfit-test result + the toy run's loss curve + a sample. `CHANGELOG.md` line. `REPRODUCE.md`: add the toy-training section (the heredoc above).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/slm/train.py src/slm/sample.py tests/test_train.py labs/lab05_sampling.py CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md
@@ -1359,7 +1359,7 @@ git commit -m "feat: export hand-built weights to LlamaForCausalLM (round-trip v
 - Consumes: the exported HF directory `export/tinystories-slm` from Task 7.
 - Produces: `export/tinystories-slm-f16.gguf`, `...-Q8_0.gguf`, `...-Q4_K_M.gguf`; an Ollama model named `tinystories-slm`.
 
-- [ ] **Step 1: Write `scripts/convert_to_gguf.sh`**
+- [x] **Step 1: Write `scripts/convert_to_gguf.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -1382,17 +1382,17 @@ python "$LLAMA_CPP/convert_hf_to_gguf.py" "$SRC" \
 echo "Wrote f16, Q8_0, Q4_K_M GGUFs to $OUT/"
 ```
 
-- [ ] **Step 2: Run the conversion**
+- [x] **Step 2: Run the conversion**
 
 Run: `bash scripts/convert_to_gguf.sh`
 Expected: three `.gguf` files; Q4_K_M is the smallest, f16 the largest. Sizes recorded in DEVLOG.
 
-- [ ] **Step 3: Smoke-test the GGUF with llama.cpp directly**
+- [x] **Step 3: Smoke-test the GGUF with llama.cpp directly**
 
 Run: `~/llama.cpp/build/bin/llama-cli -m export/tinystories-slm-Q8_0.gguf -p "Once upon a time" -n 80`
 Expected: coherent story text, close to the PyTorch sample — proving the weights survived conversion.
 
-- [ ] **Step 4: Write `scripts/Modelfile`**
+- [x] **Step 4: Write `scripts/Modelfile`**
 
 ```
 FROM ./export/tinystories-slm-Q4_K_M.gguf
@@ -1402,7 +1402,7 @@ PARAMETER stop "<|endoftext|>"
 TEMPLATE """{{ .Prompt }}"""
 ```
 
-- [ ] **Step 5: Create and run the Ollama model**
+- [x] **Step 5: Create and run the Ollama model**
 
 Run:
 ```bash
@@ -1411,7 +1411,7 @@ ollama run tinystories-slm "Once upon a time"
 ```
 Expected: Ollama streams a little story. **This is the Phase-1 finish line** — a model you built from scratch, running on your CPU through the same tool people use for Llama.
 
-- [ ] **Step 6: Write Lab 07 (GGUF teardown)** `labs/lab07_gguf_teardown.py`
+- [x] **Step 6: Write Lab 07 (GGUF teardown)** `labs/lab07_gguf_teardown.py`
 
 ```python
 """Lab 07 — peek inside a .gguf: it's just a header + metadata + tensors.
@@ -1434,7 +1434,7 @@ print("metadata entries (arch, hyperparams, tokenizer) follow. A .gguf is a")
 print("self-describing container: the runtime reads this to know how to run it.")
 ```
 
-- [ ] **Step 7: Write Lab 08 (quant compare)** `labs/lab08_quant_compare.py`
+- [x] **Step 7: Write Lab 08 (quant compare)** `labs/lab08_quant_compare.py`
 
 ```python
 """Lab 08 — compare output + size across quantization levels.
@@ -1453,16 +1453,16 @@ for q in ("f16", "Q8_0", "Q4_K_M"):
 print("Smaller quant = smaller file + faster, with some quality loss.")
 ```
 
-- [ ] **Step 8: Run both Labs**
+- [x] **Step 8: Run both Labs**
 
 Run: `python labs/lab07_gguf_teardown.py export/tinystories-slm-Q8_0.gguf` and `python labs/lab08_quant_compare.py`
 Expected: Lab 07 prints `b'GGUF'` + counts; Lab 08 shows size shrinking f16 → Q8_0 → Q4_K_M with comparable story quality.
 
-- [ ] **Step 9: Update docs**
+- [x] **Step 9: Update docs**
 
 `CONCEPTS.md`: **GGUF (container format)**, **quantization**, **Q8_0 vs Q4_K_M**, **inference engine (llama.cpp/Ollama)**, **Modelfile**, and **model compiler / deep-learning compiler** — frame this step explicitly as a *miniature model compiler*: `convert_hf_to_gguf.py` = export-to-IR, `llama-quantize` = an optimization pass, llama.cpp picking CPU kernels at load = codegen/runtime. Note the general landscape (ONNX Runtime, TVM, MLIR/IREE, TensorRT, OpenVINO, MLC-LLM) and that vendor stacks (incl. Tenstorrent's MLIR/Metalium toolchain) are the same idea for custom hardware — the transferable mental model for "download from HF → compile for hardware → run with confidence." `DEVLOG.md`: record GGUF sizes, the Ollama transcript, and quant comparison. `CHANGELOG.md`: mark Phase 1 complete. `REPRODUCE.md`: add the full convert → Ollama section. Update `README.md` quickstart to `ollama run tinystories-slm`.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add scripts labs/lab07_gguf_teardown.py labs/lab08_quant_compare.py CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md README.md

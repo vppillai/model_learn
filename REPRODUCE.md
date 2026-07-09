@@ -116,3 +116,46 @@ print(t.decode(m.generate(ids, max_new_tokens=80, do_sample=True, top_k=40)[0], 
 # 4. Push to the Hub (needs `uv run hf auth login` with a write token first):
 PYTHONPATH=src uv run python -c "from slm.export_hf import push; push('export/tinystories-slm','<your-hf-username>/tinystories-slm', private=True)"
 ```
+
+## Milestone: runs in Ollama (GGUF → CPU inference) 🎉
+
+Install the tools (treated as part of the learning):
+```bash
+uv pip install cmake                                          # build tool, no sudo
+git clone --depth 1 https://github.com/ggerganov/llama.cpp ~/llama.cpp
+uv pip install gguf sentencepiece protobuf                    # GGUF converter deps
+cd ~/llama.cpp && uv run cmake -B build -DLLAMA_CURL=OFF \
+  && uv run cmake --build build -j 4                          # -j 4: avoid OOM
+sudo apt-get install -y zstd                                  # Ollama installer needs it
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**Custom-tokenizer note:** our byte-level BPE isn't in llama.cpp's known-hash
+list, so `convert_hf_to_gguf.py` raises "BPE pre-tokenizer was not recognized".
+Register our hash as gpt-2 in `~/llama.cpp/conversion/base.py` (function
+`get_vocab_base_pre`, right after `res = None`):
+```python
+if chkhsh == "fe391dc444441ca4ac6d0db249a2436cb79fefc44a69010a3f101683e4102738":
+    res = "gpt-2"   # our tokenizer is a standard GPT-2-style byte-level BPE
+```
+
+Convert + quantize, then run:
+```bash
+bash scripts/convert_to_gguf.sh          # -> export/tinystories-slm-{f16,Q8_0,Q4_K_M}.gguf
+
+# smoke-test via llama.cpp (-st = single-turn, exits cleanly):
+~/llama.cpp/build/bin/llama-cli -m export/tinystories-slm-Q8_0.gguf \
+  -p "Once upon a time" -n 80 -st --simple-io --no-warmup
+
+# Ollama (start the server if systemd didn't: `ollama serve &`):
+# NOTE: Ollama 0.31.2 rejects a relative FROM path — rewrite to absolute:
+sed "s#\./export#$(pwd)/export#" scripts/Modelfile > /tmp/Modelfile.abs
+ollama create tinystories-slm -f /tmp/Modelfile.abs
+ollama run tinystories-slm "Once upon a time"
+```
+
+Explore the artifacts:
+```bash
+PYTHONPATH=src uv run python labs/lab07_gguf_teardown.py export/tinystories-slm-Q8_0.gguf
+PYTHONPATH=src uv run python labs/lab08_quant_compare.py
+```

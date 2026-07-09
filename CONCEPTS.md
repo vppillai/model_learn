@@ -278,3 +278,50 @@ projection (`lm_head`). Halves the largest parameter block and ties the
 `tie_embeddings=True`; it's also the root of the untrained "echo" bias
 (see above). HF represents this with `tie_word_embeddings: true` in
 `config.json`.
+
+## GGUF (container format)
+The single-file format llama.cpp / Ollama consume: a self-describing binary
+holding a header (magic `GGUF`, version), all the tensors (weights), and
+metadata key-values (architecture, hyperparameters, tokenizer). "Self-
+describing" means the runtime reads the file to learn how to run the model —
+no separate config needed. Lab: `labs/lab07_gguf_teardown.py` reads the
+header (our Q8_0: 56 tensors, 34 metadata entries).
+
+## quantization
+Storing weights at lower numeric precision to shrink the file and speed up
+CPU inference, trading a little quality. Our model: f16 (16 bits/weight,
+27MB) → Q8_0 (8.5 bpw, 15MB) → Q4_K_M (6.2 bpw, 11MB). All three still tell
+coherent stories (Lab 08). Because quantization perturbs the logits
+slightly, the *same* prompt+seed produces slightly different text per quant.
+
+## Q8_0 vs Q4_K_M
+Two quantization schemes. Q8_0 is simple 8-bit, near-lossless. Q4_K_M is a
+~4-bit "K-quant" that mixes precisions across a tensor (more bits for
+sensitive weights) to stay coherent at half the size. Q4_K_M is the common
+default: smallest/fastest with acceptable quality. (On our tiny model, 36/56
+tensors fell back to a higher precision because their shapes don't fit
+Q4_K_M's block structure — benign.)
+
+## inference engine (llama.cpp / Ollama)
+The runtime that actually executes a model: loads the GGUF, picks optimized
+CPU kernels for the hardware, and runs the forward pass token by token.
+llama.cpp is the engine; Ollama wraps it with model management and a simple
+`ollama run` UX (it embeds its own llama.cpp build).
+
+## Modelfile
+Ollama's recipe for packaging a model: a `FROM` (the GGUF) plus inference
+defaults (`temperature`, `top_k`, `stop`) and a prompt `TEMPLATE`. `ollama
+create <name> -f Modelfile` registers it so `ollama run <name>` works. See
+`scripts/Modelfile`.
+
+## model compiler / deep-learning compiler (the transferable mental model)
+The GGUF path *is* a miniature model compiler, and naming its stages is the
+mental model that generalizes to any hardware:
+- `convert_hf_to_gguf.py` = **export to IR** (framework format → portable GGUF).
+- `llama-quantize` (f16→Q8_0→Q4_K_M) = an **optimization pass**.
+- llama.cpp/Ollama picking CPU kernels at load = **codegen + runtime**.
+The same shape appears in ONNX Runtime, TVM, MLIR/IREE, TensorRT, OpenVINO,
+MLC-LLM — and in vendor stacks like Tenstorrent's MLIR/Metalium toolchain.
+Once "convert a model for a target" clicks, deploying HF models onto custom
+hardware is just: export → IR → lower/optimize → hardware engine. (Phase 4
+expands this.)
