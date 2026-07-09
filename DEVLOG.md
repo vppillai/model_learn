@@ -277,3 +277,44 @@ and left untouched. Added a Troubleshooting section to `notebooks/README.md`
 (numpy `_center` error → Restart session; never `-r requirements.txt` on
 Colab). Recovery for a session already in the broken state: Runtime → Restart
 session, then rerun with the fixed Cell 1.
+
+### 2026-07-09 — Task 6 complete: coherent-stories milestone reached
+
+Colab run succeeded on the fixed notebook. Step-0 loss was **361.7** — a lovely
+confirmation of the echo-bias theory: initial loss ≈ `d_model` (SMALL's 384),
+just as TOY's ~62 tracked its d_model of 64 (init loss ≈ `|embed(last)|²` ≈
+d_model, since embedding entries are ~unit variance). Loss plunged to single
+digits within a few hundred steps, then declined gradually over the full 20,000
+steps (confirmed by the `small_loss.png` x-axis).
+
+Config: `SMALL` exactly (vocab 8192, d_model 384, 6 layers, 6 heads, ctx 512),
+**13,767,552 params** — the number `n_params()` predicted in Task 1 before any
+model code existed. Run params: lr 6e-4, warmup 200, max_steps 20000, bs 64,
+fp32, `limit=200_000` stories → 44,290,410-token stream. GPU: Colab T4 free
+tier (exact wall-clock not recorded).
+
+**Local eval (CPU, fresh 500-story sample, 30 batches): loss 1.811,
+perplexity 6.1** — vs the toy run's ~4.3 / ppl ~74 and the uniform baseline
+ln(8192)=9.01. ~12x better perplexity than toy: the capacity + data payoff.
+
+Verbatim generated story (prompt "Once upon a time", temp 0.8, top_k 40, seed 0):
+> Once upon a time, there was a little boy named Tim. Tim loved to take pictures
+> with his camera. One day, Tim went to the park with his mom. At the park, Tim
+> found a nice spot under a big tree. Tim saw a bird's friend, Sarah. Tim asked,
+> "Do you like my camera?" Sarah said, "Yes, it's very pretty." Tim took a photo
+> of Tim and kept it in his pocket. They played and laughed and had fun. Soon
+
+Coherent grammar, named characters, dialogue, a plot arc — real TinyStories
+prose. Minor 14M-on-a-subset artifacts remain ("Tim took a photo of Tim"; the
+invented word "lonari" in another sample) but the milestone is unambiguously hit.
+
+**Gotcha 6 — GPU checkpoint won't load on a CPU box.** `torch.save` records each
+tensor's device, so `small.pt` (saved on CUDA) carried CUDA location tags;
+`load_checkpoint`'s `torch.load(...)` (no `map_location`) failed on this
+CPU-only machine with "Attempting to deserialize object on a CUDA device but
+torch.cuda.is_available() is False." This is *the* project's core scenario
+(download a model trained elsewhere, run it locally), so fixed at the source:
+`load_checkpoint` now passes `map_location="cpu"` (inference/packaging here is
+always CPU; callers can `.to(device)` afterward). Alternative would be moving
+the state_dict to CPU before saving, but the loader fix is the robust general
+one. CPU→CPU load is unaffected (no-op), so existing tests still pass.

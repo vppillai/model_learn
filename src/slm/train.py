@@ -98,7 +98,10 @@ def save_checkpoint(model, model_cfg: ModelConfig, path: str):
 
 
 def load_checkpoint(path: str):
-    ckpt = torch.load(path, weights_only=True)  # tensors + plain containers only
+    # map_location="cpu": a checkpoint trained on GPU (e.g. Colab) records CUDA
+    # tensor locations; without remapping it fails to load on a CPU-only box.
+    # Inference/packaging here is always CPU; callers can .to(device) after.
+    ckpt = torch.load(path, weights_only=True, map_location="cpu")  # tensors + plain containers only
     cfg = ModelConfig(**ckpt["config"])
     model = LlamaSLM(cfg)
     model.load_state_dict(ckpt["state_dict"])

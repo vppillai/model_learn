@@ -1183,20 +1183,20 @@ files.download("checkpoints/small_loss.png")
 
 - [x] **Step 2: Write `notebooks/README.md`** documenting: open in Colab → Runtime → change to GPU (T4) → run cells top to bottom → download the 3 files into local `checkpoints/`. Note the free-tier session limit and that `max_steps` can be lowered if the session is at risk of timing out; record the actual final `max_steps` and loss in `DEVLOG.md`.
 
-- [ ] **Step 3: Run the notebook on Colab (manual)**
+- [x] **Step 3: Run the notebook on Colab (manual)**
 
 Expected: validation loss falls well below the toy run; `sample_every` printouts show increasingly coherent little stories by the end. Save `small_loss.png`.
 
-- [ ] **Step 4: Verify the downloaded checkpoint locally on CPU**
+- [x] **Step 4: Verify the downloaded checkpoint locally on CPU**
 
 Run: `python src/slm/sample.py checkpoints/small.pt checkpoints/small_tok.json "Once upon a time"`
 Expected: a short, mostly-coherent children's story (the Phase-1 payoff).
 
-- [ ] **Step 5: Update docs**
+- [x] **Step 5: Update docs**
 
 `DEVLOG.md`: record final `small` config, `max_steps`, training time, GPU type, final loss, and a verbatim generated story. `CHANGELOG.md` line. `REPRODUCE.md`: add the Colab section with the exact cells.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add notebooks DEVLOG.md CHANGELOG.md REPRODUCE.md
