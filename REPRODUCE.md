@@ -95,3 +95,24 @@ PYTHONPATH=src uv run python -m slm.sample checkpoints/small.pt checkpoints/smal
 ```
 Expected: a short, mostly-coherent children's story. (Final loss and an
 example story are recorded in `DEVLOG.md` after the run.)
+
+## Milestone: published (export to HF format + push to Hub)
+```bash
+# 1. Verify the architecture is bit-for-bit Llama (round-trip test):
+uv run pytest tests/test_export.py -v
+
+# 2. Export the trained small model to standard HF format:
+PYTHONPATH=src uv run python -c "from slm.export_hf import export_to_hf; export_to_hf('checkpoints/small.pt','checkpoints/small_tok.json','export/tinystories-slm')"
+
+# 3. Confirm it loads with stock transformers (no custom code):
+PYTHONPATH=src uv run python -c "
+from transformers import LlamaForCausalLM, PreTrainedTokenizerFast
+m = LlamaForCausalLM.from_pretrained('export/tinystories-slm').eval()
+t = PreTrainedTokenizerFast.from_pretrained('export/tinystories-slm')
+ids = t('Once upon a time', return_tensors='pt').input_ids
+print(t.decode(m.generate(ids, max_new_tokens=80, do_sample=True, top_k=40)[0], skip_special_tokens=True))
+"
+
+# 4. Push to the Hub (needs `uv run hf auth login` with a write token first):
+PYTHONPATH=src uv run python -c "from slm.export_hf import push; push('export/tinystories-slm','<your-hf-username>/tinystories-slm', private=True)"
+```

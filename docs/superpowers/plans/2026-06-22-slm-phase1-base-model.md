@@ -1215,7 +1215,7 @@ git commit -m "feat: Colab notebook for small-model training; coherent-stories m
 - Consumes: `LlamaSLM`, `ModelConfig`, a trained checkpoint, the tokenizer JSON.
 - Produces: `to_hf_config(cfg: ModelConfig) -> LlamaConfig`; `export_to_hf(ckpt_path, tok_path, out_dir) -> str` (writes a `LlamaForCausalLM` + `PreTrainedTokenizerFast` to `out_dir`, returns it); `push(out_dir, repo_id)`; and the key correctness guarantee: HF model logits equal hand-built logits within `atol=1e-4`.
 
-- [ ] **Step 1: Write the failing test** in `tests/test_export.py`
+- [x] **Step 1: Write the failing test** in `tests/test_export.py`
 
 ```python
 import torch
@@ -1237,12 +1237,12 @@ def test_hf_roundtrip_matches_handbuilt():
     assert torch.allclose(a, b, atol=1e-4), (a - b).abs().max().item()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_export.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'slm.export_hf'`.
 
-- [ ] **Step 3: Implement `src/slm/export_hf.py`**
+- [x] **Step 3: Implement `src/slm/export_hf.py`**
 
 ```python
 import torch
@@ -1312,12 +1312,12 @@ def push(out_dir: str, repo_id: str):
     PreTrainedTokenizerFast.from_pretrained(out_dir).push_to_hub(repo_id)
 ```
 
-- [ ] **Step 4: Run the round-trip test**
+- [x] **Step 4: Run the round-trip test**
 
 Run: `pytest tests/test_export.py -v`
 Expected: PASS. If it fails, the diff localizes the architecture mismatch (most likely RoPE convention or RMSNorm eps) — fix the hand-built model to match HF, since HF is the conversion target. This test is the linchpin of the whole "it converts to GGUF cleanly" promise.
 
-- [ ] **Step 5: Export the trained small model and write a model card**
+- [x] **Step 5: Export the trained small model and write a model card**
 
 Run:
 ```bash
@@ -1325,7 +1325,7 @@ python -c "from slm.export_hf import export_to_hf; export_to_hf('checkpoints/sma
 ```
 Then create `export/tinystories-slm/README.md` (model card): what it is, training data (TinyStories), config, intended use (educational), limitations (tiny, stories-only), and the exact `sample.py` command to reproduce generation.
 
-- [ ] **Step 6: Push to the Hub (requires `huggingface-cli login`)**
+- [x] **Step 6: Push to the Hub (requires `huggingface-cli login`)**
 
 Run:
 ```bash
@@ -1334,11 +1334,11 @@ python -c "from slm.export_hf import push; push('export/tinystories-slm','<your-
 ```
 Expected: repo appears on the Hub with weights, config, tokenizer, and model card. *(This is an outward-facing publish — confirm the repo name/visibility before running.)*
 
-- [ ] **Step 7: Update docs**
+- [x] **Step 7: Update docs**
 
 `CONCEPTS.md`: **safetensors**, **config.json**, **model card**, **weight tying (input/output embeddings)**, **why HF format = portability**. `DEVLOG.md`: record the round-trip max-diff and the Hub URL. `CHANGELOG.md` line. `REPRODUCE.md`: add the export + push steps.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/slm/export_hf.py tests/test_export.py export/tinystories-slm/README.md CONCEPTS.md DEVLOG.md CHANGELOG.md REPRODUCE.md

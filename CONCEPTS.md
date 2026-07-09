@@ -233,3 +233,48 @@ Deliberately training on a single fixed batch over and over until loss →
 even memorize one batch, gradient flow / loss / wiring is broken. Only once
 this passes is it worth spending time on a real dataset. See
 `test_overfit_one_batch_drives_loss_down` in `tests/test_train.py`.
+
+## HF format / why it means portability
+The "standard container" the whole ecosystem understands: a directory with
+`config.json` (architecture spec), `model.safetensors` (weights), and
+tokenizer files. We hand-built `LlamaSLM` for understanding, then copy its
+weights into a stock `transformers.LlamaForCausalLM` and `save_pretrained`.
+Because our architecture is bit-for-bit Llama, the result loads with zero
+custom code and converts to GGUF cleanly. Analogy: our weights are the
+compiled binary; HF format is repackaging into the container every runtime
+already knows how to open. See `src/slm/export_hf.py`.
+
+## round-trip equivalence (the correctness linchpin)
+The test that our hand-built model and the official `LlamaForCausalLM`
+produce *identical* logits for the same input (max abs diff ~1e-5, pure
+float noise). It's the proof our from-scratch architecture is genuinely
+Llama — not "close." Everything downstream (Hub, GGUF, Ollama) depends on
+it. See `tests/test_export.py`.
+
+## config.json
+The plain-text spec that tells any runtime how to interpret the weights:
+hidden size, layer count, head count, vocab size, rms_norm_eps, rope_theta,
+and the special-token ids. Getting the special-token ids right matters —
+ours declares `<|endoftext|>` (id 0) as bos/eos/pad so `generate()` stops at
+end-of-story; leaving Llama's defaults (eos=2) would make published copies
+never stop correctly.
+
+## safetensors
+A safe, fast weights file format: just tensors + metadata, memory-mappable,
+and — unlike a pickled `.bin` — it cannot execute arbitrary code on load.
+The modern default for distributing model weights.
+
+## model card (README.md)
+The human-facing documentation shipped *with* a model on the Hub: what it
+is, training data, config, intended use, and limitations. The Hub renders it
+as the model's front page. `from_pretrained().push_to_hub()` doesn't upload
+it automatically — we upload it explicitly. See `push()` in
+`src/slm/export_hf.py`.
+
+## weight tying (input/output embeddings)
+Using the *same* matrix for the input embedding table and the output
+projection (`lm_head`). Halves the largest parameter block and ties the
+"meaning of a token going in" to "score for that token coming out." We set
+`tie_embeddings=True`; it's also the root of the untrained "echo" bias
+(see above). HF represents this with `tie_word_embeddings: true` in
+`config.json`.

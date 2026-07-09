@@ -318,3 +318,30 @@ torch.cuda.is_available() is False." This is *the* project's core scenario
 always CPU; callers can `.to(device)` afterward). Alternative would be moving
 the state_dict to CPU before saving, but the loader fix is the robust general
 one. CPU→CPU load is unaffected (no-op), so existing tests still pass.
+
+## 2026-07-09 — Task 7: export to HF format + published to Hub
+
+- Implemented `src/slm/export_hf.py`: `to_hf_config`, `_copy_weights_into_hf`
+  (renames our tensors to HF names), `export_to_hf`, `push`.
+- **Round-trip test passed first try** even against transformers 5.13.0 (plan
+  assumed 4.45+): hand-built `LlamaSLM` vs `LlamaForCausalLM` with our weights
+  copied in — **max abs logit diff 9.54e-06**, mean 8.78e-07 (pure float
+  noise). Proof the from-scratch architecture is bit-for-bit Llama. This is
+  the Task-1 "HF-exact" constraint paying off; nothing to fix.
+- Exported the trained `small` model to `export/tinystories-slm/` (config.json,
+  model.safetensors, tokenizer files). Verified by loading with stock
+  `transformers` (no custom code) and generating a coherent story.
+- **Gotcha 7 — special-token id mismatch in exported config.** `LlamaConfig`
+  defaults bos=1/eos=2, but our `<|endoftext|>` is id 0. Left as-is, a
+  published copy would never stop generating at a story break (generate() waits
+  for token 2). Fixed `to_hf_config` to set bos/eos/pad = 0. Verified effect:
+  5/6 sampled generations now stop early at EOS (before: all ran to max_len).
+- **Gotcha 8 — HF username != GitHub username.** GitHub is `vppillai`, but the
+  HF account is `vysakhpillai`. Repo must live under the HF namespace; fixed
+  the model-card usage examples to `vysakhpillai/tinystories-slm`.
+- Published to **private** Hub repo `vysakhpillai/tinystories-slm` (weights +
+  config + tokenizer + model card). `push_to_hub` skips README, so `push()`
+  uploads the model card explicitly. Verified via API: private=True, all 7
+  files present.
+- Note: user pasted a write HF token into the chat during login — flagged for
+  rotation. (Token stored at ~/.cache/huggingface/token for this machine.)
