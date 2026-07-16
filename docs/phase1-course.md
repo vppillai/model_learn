@@ -1774,3 +1774,608 @@ current sequence of token ids to a sequence that's one token longer. Name each
 operation in order (crop → forward → take last position → optional
 temperature/top-k → softmax → sample → append) and say in one line what each one
 does.
+
+## Module 6 — Training
+
+### Learning objectives
+
+By the end of this module you'll be able to: explain cross-entropy loss in
+plain language and say why it penalizes a confident wrong answer far more
+than an honestly uncertain one; read the real `lr_at` function and describe
+the warmup-then-cosine-decay shape it produces, and explain why warmup
+exists at all; explain what AdamW actually does with a gradient (adaptive
+per-parameter step sizing, plus weight decay) and what gradient clipping
+protects against; read the real `train` loop line by line and narrate one
+full training step; read `save_checkpoint`/`load_checkpoint` and explain why
+the config is stored as a plain dict and why loading needs
+`map_location="cpu"`; and explain overfitting a single batch as the fastest
+possible proof that learning works at all, before ever pointing the trainer
+at a real dataset.
+
+### Frame
+
+Module 5 ended on a vivid demonstration of a model that runs but knows
+nothing: an untrained `LlamaSLM`, seeded with `"Once upon a time"`, just
+repeats `time` forever — confidently wrong, not merely random. Training is
+the step that turns that blank, confidently-wrong architecture into
+something that actually predicts real text. Four ideas do essentially all
+of the work.
+
+**Loss is "how wrong," and cross-entropy is the specific way this project
+measures it.** At every position the model already emits a full probability
+distribution over the vocabulary — that's the Warm-Up's softmax, one more
+time. Cross-entropy loss looks up the one probability the model assigned to
+whatever token *actually* came next, and turns that single number into a
+penalty: `loss = -log(that probability)`. A probability near `1` (confident
+and right) makes `-log(...)` land near `0` — almost no penalty. A
+probability near `0` (confident and *wrong* — betting almost everything on
+the wrong token) sends `-log(...)` shooting up toward a large number,
+because the logarithm of a tiny number is a large negative number, and the
+minus sign flips that into a large positive penalty. A middling probability
+(honestly uncertain, spreading its bets) lands somewhere in between. That
+asymmetry — confidently wrong costs far more than merely uncertain — is the
+whole design point of cross-entropy, and the worked example below makes it
+concrete with real numbers, reusing the Warm-Up's own softmax result.
+
+**AdamW is the algorithm that turns a gradient into an actual weight
+update.** Every parameter gets nudged by an amount that depends on its own
+gradient, but not directly: AdamW keeps running averages of each
+parameter's recent gradient and squared gradient, and uses those averages
+to size that parameter's own step (a parameter with a history of small,
+consistent gradients gets a confident, appropriately-sized step; a noisy
+one gets dampened). The "W" adds weight decay — a small constant pull of
+every weight toward zero at each step, independent of the gradient, which
+discourages any one weight from growing needlessly large.
+
+**The learning-rate schedule ramps up, peaks, then decays.** The learning
+rate isn't one constant for the whole run. Early on, the freshly-random
+weights (compounded by the echo bias from Module 5) produce large,
+unreliable gradients, so taking a full-strength step immediately risks
+blowing the weights somewhere useless. `lr_at` (below) ramps the learning
+rate linearly from `0` up to a peak over `warmup_steps` steps, touches the
+peak for exactly one step, then eases it back down along a cosine curve for
+the rest of training — bigger, bolder steps while there's a lot of ground
+to cover, smaller, more careful ones as the model settles.
+
+**Gradient clipping is a safety cap, not a normal-operation mechanism.**
+Every so often a single batch produces an unusually large gradient (an
+outlier example, a numerical spike); clipping rescales the *whole* gradient
+so its overall size never exceeds `grad_clip`, so one freak batch can't
+yank every weight off a cliff in a single step.
+
+**Overfitting one batch is the "does this even work" proof.** Before ever
+pointing the trainer at real data, the fastest, cheapest test of whether
+the whole pipeline is wired correctly is to feed it the exact same tiny
+batch, over and over, and watch whether the loss collapses toward zero. If
+a model can't even memorize one repeated batch, something upstream — data
+flow, gradient flow, the loss computation itself — is broken, and no amount
+of real training data will fix it. Only once this passes is it worth
+spending real time (and, on Colab, real GPU minutes) on an actual dataset.
+
+### Annotated code walkthrough
+
+**The learning-rate schedule.** Here's the real, current `lr_at` from
+`src/slm/train.py`:
+
+```python
+def lr_at(step: int, cfg: TrainConfig) -> float:
+    """Linear warmup to the peak lr at step == warmup_steps, then cosine decay."""
+    if step < cfg.warmup_steps:
+        return cfg.lr * step / cfg.warmup_steps
+    if step == cfg.warmup_steps:
+        return cfg.lr
+    progress = (step - cfg.warmup_steps) / max(1, cfg.max_steps - cfg.warmup_steps)
+    return 0.5 * cfg.lr * (1 + math.cos(math.pi * min(1.0, progress)))
+```
+
+- While `step < warmup_steps`: a straight linear ramp,
+  `cfg.lr * step / warmup_steps` — `0.0` at step `0`, climbing in equal
+  increments toward the peak as `step` grows.
+- At `step == warmup_steps` exactly: return `cfg.lr` outright — the literal
+  peak learning rate, the one step where warmup ends and decay begins.
+- Past warmup: `progress` is how far through the *remaining* steps training
+  is, clamped to at most `1.0` (`min(1.0, progress)`) so the curve can't
+  overshoot into negative-cosine territory if a run ever ticks a few steps
+  past `max_steps`. `0.5 * cfg.lr * (1 + cos(pi * progress))` is the
+  standard cosine-decay curve: at `progress = 0` this evaluates to
+  `0.5 * lr * (1 + 1) = lr` (matching the peak exactly), and at
+  `progress = 1` it's `0.5 * lr * (1 + cos(pi)) = 0.5 * lr * (1 - 1) = 0` —
+  the learning rate reaches exactly zero on the very last step.
+
+**The training loop.** Here's the real, current `train`:
+
+```python
+def train(model: LlamaSLM, data: list[int], cfg: TrainConfig, tok=None):
+    torch.manual_seed(cfg.seed)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr,
+                            weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
+    history: list[tuple[int, float]] = []
+    rows: list[tuple[int, float]] = []
+    model.train()
+    # Batches are built on CPU (get_batch uses a CPU RNG for determinism);
+    # move each to the model's device so the same code runs on CPU or GPU.
+    device = next(model.parameters()).device
+    # Tensorize the token stream ONCE (not per-step): at Colab scale the stream
+    # is tens of millions of tokens and re-copying it every call would dominate.
+    data_t = data if isinstance(data, torch.Tensor) else torch.tensor(data, dtype=torch.long)
+    for step in range(cfg.max_steps + 1):
+        seed = cfg.seed if cfg.fixed_batch else cfg.seed + step
+        x, y = get_batch(data_t, cfg.batch_size, cfg.context_len, seed=seed)
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+        for g in opt.param_groups:
+            g["lr"] = lr_at(step, cfg)
+        opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        opt.step()
+        if step % cfg.log_every == 0:
+            history.append((step, loss.item()))
+            rows.append((step, loss.item()))
+            print(f"step {step:>5} | loss {loss.item():.4f} | lr {lr_at(step, cfg):.2e}")
+        if tok is not None and cfg.sample_every and step % cfg.sample_every == 0 and step > 0:
+            _print_sample(model, tok)
+    save_checkpoint(model, model.cfg, cfg.ckpt_path)
+    _write_csv(rows, cfg.ckpt_path.replace(".pt", "_loss.csv"))
+    return history
+```
+
+Walking through one iteration of the loop — this *is* one full training step:
+
+- `opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr,
+  weight_decay=cfg.weight_decay, betas=(0.9, 0.95))` builds the optimizer
+  once, before the loop, handing it every parameter in the model. `betas`
+  are AdamW's two running-average decay rates (how much weight recent
+  gradients get versus older ones) — `(0.9, 0.95)` is a standard choice for
+  transformer training.
+- `device = next(model.parameters()).device` reads whichever device the
+  model's own parameters currently live on — `cpu`, or `cuda:0` if the
+  model was moved there before `train()` was ever called. The comment right
+  above it says why: `get_batch` builds its random starting positions with
+  a private *CPU* generator (Module 3), so batches always arrive on CPU
+  first and have to be moved onto wherever the model actually lives.
+- `data_t = data if isinstance(...) else torch.tensor(...)` — the same
+  tensorize-once pattern from `get_batch` (Module 3), applied at the
+  `train()` level: the whole token stream is converted to a tensor exactly
+  once before the loop starts, not on every step.
+- Inside the loop, `seed = cfg.seed if cfg.fixed_batch else cfg.seed +
+  step` picks the seed passed to `get_batch`. With `fixed_batch=False`
+  (the normal case), every step gets a different seed and therefore a
+  fresh random batch. With `fixed_batch=True`, every step reuses the exact
+  same seed — and therefore the exact same batch — which is precisely the
+  overfit-one-batch technique from the Frame above, wired in as a config
+  flag rather than a separate code path.
+- `x, y = get_batch(...)` then `x, y = x.to(device), y.to(device)` is the
+  device-portability move itself: build the batch (CPU), then move both
+  tensors onto the model's device. Module 7 walks through why this
+  particular line matters so much once the model actually lives on a GPU.
+- `logits = model(x)` runs the forward pass from Module 5 — shape
+  `(batch, context_len, vocab_size)`, one full score vector per position.
+- `loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)),
+  y.reshape(-1))` is cross-entropy applied over *every position in the
+  batch at once*: `logits.reshape(-1, vocab_size)` flattens the batch and
+  sequence axes together into one long list of per-position score vectors,
+  and `y.reshape(-1)` flattens the matching targets the same way, so every
+  position's prediction is scored against its own true next token in a
+  single call.
+- `for g in opt.param_groups: g["lr"] = lr_at(step, cfg)` is how the
+  schedule actually gets applied: AdamW doesn't know about warmup or
+  cosine decay at all — the loop simply overwrites the optimizer's
+  learning rate, fresh, before every single step, using whatever `lr_at`
+  computes for the current `step`.
+- `opt.zero_grad()`, `loss.backward()`, `clip_grad_norm_(...)`, `opt.step()`
+  is the standard four-beat update: clear out any leftover gradients from
+  the previous step, compute fresh gradients for every parameter via
+  backpropagation, clip their combined size down to `cfg.grad_clip` if
+  they're too large, then let AdamW actually apply the update.
+- The periodic `if step % cfg.log_every == 0` block records `(step, loss)`
+  pairs for the printed log and the CSV write at the end; the
+  `if tok is not None and ...` block beneath it calls `_print_sample`,
+  which generates a short sample from the model-in-progress every
+  `sample_every` steps — that's exactly what produced the "coherence
+  ladder" of samples in What We Observed below.
+- After the loop finishes, `save_checkpoint(...)` writes the final weights
+  and config to disk, and `_write_csv(...)` dumps the full loss history —
+  the same CSV `plot_loss` (also in `train.py`) later turns into a PNG.
+
+**Saving and loading a checkpoint.** Here's the real, current
+`save_checkpoint`/`load_checkpoint`:
+
+```python
+def save_checkpoint(model, model_cfg: ModelConfig, path: str):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # Store config as a plain dict (not a pickled dataclass) so the checkpoint
+    # can be loaded with weights_only=True — never unpickle arbitrary objects
+    # from a downloaded model file (that is an arbitrary-code-execution vector).
+    torch.save({"state_dict": model.state_dict(), "config": asdict(model_cfg)}, path)
+
+
+def load_checkpoint(path: str):
+    # map_location="cpu": a checkpoint trained on GPU (e.g. Colab) records CUDA
+    # tensor locations; without remapping it fails to load on a CPU-only box.
+    # Inference/packaging here is always CPU; callers can .to(device) after.
+    ckpt = torch.load(path, weights_only=True, map_location="cpu")  # tensors + plain containers only
+    cfg = ModelConfig(**ckpt["config"])
+    model = LlamaSLM(cfg)
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    return model, cfg
+```
+
+- A checkpoint is two things bundled together: `model.state_dict()` (every
+  learned weight tensor, by name) and `asdict(model_cfg)` — the
+  `ModelConfig` dataclass turned into a *plain dictionary* of its fields
+  (`vocab_size`, `d_model`, `n_layers`, and so on), rather than the
+  dataclass object itself. That distinction is what makes `weights_only=True`
+  possible on load (see Gotchas).
+- `load_checkpoint` reverses the process: `torch.load(..., weights_only=True,
+  map_location="cpu")` reads the file back as tensors and plain containers
+  only, then `cfg = ModelConfig(**ckpt["config"])` rebuilds a real
+  `ModelConfig` from that plain dict, `model = LlamaSLM(cfg)` constructs a
+  fresh (untrained-shaped) model from it, and `model.load_state_dict(...)`
+  copies the saved weights into that fresh model. `model.eval()` puts it in
+  inference mode before handing it back.
+
+**Temperature and top-k, reshaping a distribution.** `train()`'s
+`_print_sample` helper calls `model.generate(..., temperature=0.8,
+top_k=40)` every `sample_every` steps — the same two knobs Module 5's
+`generate` loop exposed. `labs/lab05_sampling.py` isolates exactly what
+those knobs do to a fixed set of scores, with no model attached at all:
+
+```python
+import torch
+torch.manual_seed(0)
+logits = torch.tensor([3.0, 2.0, 1.0, 0.5, 0.0, -1.0])
+for temp in (0.2, 0.8, 1.5):
+    p = torch.softmax(logits / temp, dim=-1)
+    print(f"temp={temp}: " + " ".join(f"{x:.2f}" for x in p))
+```
+
+Real output:
+
+```
+temp=0.2: 0.99 0.01 0.00 0.00 0.00 0.00
+temp=0.8: 0.69 0.20 0.06 0.03 0.02 0.00
+temp=1.5: 0.46 0.24 0.12 0.09 0.06 0.03
+```
+
+The same six raw scores, softmaxed three different ways: dividing by a
+*low* temperature (`0.2`) before the softmax sharpens the distribution to
+`0.99` on the top score alone — nearly greedy, nearly deterministic;
+dividing by a *high* temperature (`1.5`) flattens it to
+`0.46/0.24/0.12/...` — much closer to uniform, more room for a
+lower-scoring token to get sampled. This is the exact temperature mechanic
+from the Warm-Up's softmax section, now shown across the specific values
+`_print_sample` actually uses (`0.8`, moderately sharp) rather than the
+defaults. Top-k works differently in kind: instead of reshaping every
+probability, it zeroes out every score outside the `k` highest before the
+softmax ever runs (Module 5's `generate` walkthrough has the exact line),
+so a token ranked below the top `k` has *exactly* zero chance of being
+sampled, however high temperature is set.
+
+### In-context worked example
+
+Take the Warm-Up's own softmax result and put a loss on top of it. Recall:
+`softmax([2.0, 1.0, 0.0])` came out to `[0.665, 0.245, 0.090]` back in the
+Warm-Up. Now suppose those are a model's predicted probabilities for three
+possible next tokens — token 0, 1, 2 — and ask: what's the cross-entropy
+loss if the *actual* next token turns out to be token 0 (the one the model
+favored most)? What if it turns out to be token 2 (the one the model
+favored least)?
+
+```python
+import torch, torch.nn.functional as F
+logits = torch.tensor([2.0,1.0,0.0])
+print('p:', torch.softmax(logits,-1).tolist())
+print('loss true=0:', F.cross_entropy(logits.unsqueeze(0), torch.tensor([0])).item())
+print('loss true=2 (confident-wrong):', F.cross_entropy(logits.unsqueeze(0), torch.tensor([2])).item())
+```
+
+Real output:
+
+```
+p: [0.6652409434318542, 0.2447284758090973, 0.09003057330846786]
+loss true=0: 0.40760594606399536
+loss true=2 (confident-wrong): 2.4076058864593506
+```
+
+`F.cross_entropy` takes raw logits directly (it applies the softmax
+internally, then takes `-log` of the true class's probability), so these
+two numbers are exactly `-log(0.665)` and `-log(0.090)`. When the true next
+token really is the one the model put `66.5%` of its probability on, the
+loss is a modest `0.41` — some penalty, because the model wasn't
+*certain*, but not much. When the true next token is instead the one the
+model gave only `9.0%` to — the model was confidently betting on something
+else — the loss jumps to `2.41`, about six times larger for a probability
+that's only about `7.4×` smaller. That's cross-entropy's whole design
+showing up in two real numbers: confidently right costs almost nothing,
+honestly uncertain costs a little, and confidently *wrong* costs
+disproportionately more — exactly the "penalizes confident-and-wrong far
+more than uncertain" line from the Frame above, now with an exact number
+attached to both sides of it.
+
+### What we observed
+
+**Overfitting one batch, the proof that learning works.**
+`tests/test_train.py`'s `test_overfit_one_batch_drives_loss_down` builds a
+`TOY` model, hands it a fixed-batch `TrainConfig` (the same
+`fixed_batch=True` mechanism from the Annotated Code section above) over
+400 steps, and asserts `last_loss < first_loss * 0.3` and `last_loss <
+1.0` — both pass. The project's own developer log recorded the sharpest
+version of the same demonstration directly: with a single fixed batch
+repeated over and over, loss collapsed from `62.2` to `0.0000` by around
+step `50` — the model memorized that one batch essentially perfectly.
+That's the "does learning work at all" question, answered with a real
+number: yes, decisively.
+
+**The toy training run (local CPU).** Training `TOY` (`213,312`
+parameters) on 2,000 TinyStories, vocab size 2048, for 800 steps took
+about 2 minutes on CPU. Loss: `62.4 → 12.1` (step 50) `→ 6.5` (100) `→
+5.2` (200) → plateau around `4.3` (800), wiggling slightly there
+afterward (per-step loss is noisy since each step draws a fresh random
+batch, and 213K parameters is capacity-limited for real coherence — that's
+exactly what the `SMALL` Colab run in Module 7 exists to fix). The
+periodic samples climbed a visible "coherence ladder" as training
+progressed:
+
+```
+step 200: "Once upon a time, there was a little girl named a saw a time.
+She had a it was very in as and."
+step 600: "Once upon a time, there was a little girl named Tim. Every
+day excited one t adventure in the water and was so happy."
+step 800: "...She was very happy and he thought, he wanted to play with
+her. Once upon a time there were two friends with a"
+```
+
+Step 200 has real words and correct opening grammar but nonsense
+semantics; step 600 has landed on a named character and largely coherent
+clauses; step 800 reads as recognizable story structure. Nobody
+hand-designed that progression — it's the direct, visible effect of loss
+dropping from `62` toward `4.3` over those same 800 steps.
+
+**Why the untrained loss starts *above* the uniform-guessing baseline.** A
+model that knew absolutely nothing and guessed *uniformly* across all 2048
+possible tokens would score a cross-entropy loss of exactly
+`ln(2048) ≈ 7.6` — every position, however wrong, gets an equal, honest
+`1/2048` chance on the true token. `TOY`'s untrained starting loss instead
+measured around `62` — roughly *eight times worse* than that
+honest-uncertainty baseline, not better and not merely equal to it. Module
+5's deep dive explains exactly why: an untrained model with tied
+embeddings doesn't guess uniformly at all, it confidently echoes the last
+token it saw (a `max_prob` near `1.0`, driven by the self-dot-product
+`|embed(last)|²`). Cross-entropy's asymmetry (from the Frame and the
+worked example above) means that confidently betting on the *wrong* token
+is punished far harder than spreading your bets honestly across all 2048
+— which is precisely why the echo-biased, confidently-wrong starting point
+scores worse than plain uniform guessing would. The first several dozen
+steps of training are, in a very real sense, the optimizer unlearning that
+echo before it can start learning anything about actual next-token
+structure.
+
+### Gotchas & design decisions
+
+**The clean `lr_at` above is authoritative — a deliberately convoluted
+draft in the project's own plan was not used.** The original Phase 1 plan
+sketched a first version of the warmup/cosine schedule that the project's
+developer log describes explicitly as "deliberately-convoluted," meant to
+be replaced during implementation rather than copied verbatim. The version
+embedded above — linear warmup, an exact peak at `step == warmup_steps`,
+then a clamped cosine decay — is the real, current, shipped implementation
+in `src/slm/train.py`, and it's the only version that matters going
+forward.
+
+**`weights_only=True` is a security choice, not an implementation
+detail.** `torch.load` can, by default, unpickle arbitrary Python objects
+— which means loading a checkpoint from an untrusted source (a downloaded
+model file, say) can execute arbitrary code as a side effect of "just
+loading a file." Storing the config as a plain dict (rather than pickling
+the `ModelConfig` dataclass object itself) is what makes
+`weights_only=True` possible on load: with that flag, `torch.load` refuses
+to reconstruct anything beyond tensors and plain containers, closing off
+that arbitrary-code-execution path entirely. This project's whole later
+story — downloading a checkpoint someone else trained and running it
+locally — is exactly the scenario where that protection matters.
+
+**`load_checkpoint` needs `map_location="cpu"` to load a GPU-trained
+checkpoint on this box.** `torch.save` records which device each tensor
+lived on when it was saved. A checkpoint trained on a CUDA GPU (Module 7's
+Colab run) carries CUDA location tags baked into the file; without
+`map_location="cpu"`, loading that file on a machine with no GPU at all
+fails outright, because there's nowhere to put a "CUDA tensor" on a
+CPU-only box. Remapping every tensor to CPU at load time sidesteps the
+problem entirely — inference and packaging in this project always happen
+on CPU, and any caller that actually wants the model on a GPU can move it
+there afterward with a plain `.to(device)`.
+
+### Checkpoint
+
+1. Using the worked example, why does confidently predicting the wrong
+   token cost so much loss?
+2. Why ramp the learning rate up (warmup) instead of starting at the peak?
+3. What does overfitting a single batch prove, and why do it before a real
+   dataset?
+
+**Explain it back:** why does an untrained model score loss `~62` when
+uniform guessing is only `~7.6`?
+
+## Module 7 — The Real Run (small on Colab)
+
+### Learning objectives
+
+By the end of this module you'll be able to: explain why moving from the
+`TOY` config to the `SMALL` config is a config change and not a code
+change; read the real `SMALL` config values and connect them to its
+13.8M-parameter count; read the exact device-portability handling inside
+`train()` and explain what makes the identical function correct on both a
+CPU and a Colab GPU; state the real, measured results of the Colab run
+(eval loss and perplexity) and say what those numbers mean in plain terms;
+and explain, from firsthand experience, why the project deliberately
+stopped scaling up at roughly 14M parameters instead of going bigger.
+
+### Frame
+
+Every piece of Module 6 — `lr_at`, the `train` loop, cross-entropy,
+`save_checkpoint`/`load_checkpoint` — is the *exact same code* this module
+uses. Nothing about `train()` or `LlamaSLM` gets rewritten to go from the
+small, fast, CPU-only toy run to what this project calls the "real" run:
+the only two things that change are which `ModelConfig` gets passed in
+(`SMALL` instead of `TOY`) and which physical device the model happens to
+live on (a free-tier Colab T4 GPU instead of a laptop's CPU). That's the
+entire payoff of writing device-portable code once in Module 6: scaling up
+becomes a config swap, not a rewrite.
+
+### Annotated code walkthrough
+
+**The `SMALL` config.** Here's the real, current `SMALL`, alongside `TOY`
+for comparison, from `src/slm/config.py`:
+
+```python
+TOY = ModelConfig(
+    vocab_size=2048, d_model=64, n_layers=2, n_heads=4, n_kv_heads=4,
+    head_dim=16, ffn_hidden=128, context_len=128,
+)
+
+SMALL = ModelConfig(
+    vocab_size=8192, d_model=384, n_layers=6, n_heads=6, n_kv_heads=6,
+    head_dim=64, ffn_hidden=1024, context_len=512,
+)
+```
+
+Every field grows: vocabulary quadruples (`2048 → 8192`, room for a richer
+byte-level BPE vocabulary trained on far more text), `d_model` grows
+6-fold (`64 → 384`, the width of every token vector), depth triples
+(`2 → 6` layers), each attention head carries 4× the working room
+(`head_dim` `16 → 64`), the SwiGLU workspace grows 8-fold (`ffn_hidden`
+`128 → 1024`), and the context window quadruples (`128 → 512` tokens of
+history the model can look back on). Feeding `SMALL` into the exact same
+`ModelConfig.n_params()` from Module 4's params-by-component discussion
+gives **13,767,552** — the number this project rounds to "13.8M params,"
+and notably the *same* number `n_params()` predicted before any Colab run
+ever happened, since it's pure arithmetic over the config fields. `TOY`,
+for comparison, comes out to `213,312` params — `SMALL` is roughly 65× the
+capacity, still nowhere near a "large" language model, but enough of a
+jump to move well past `TOY`'s capacity-limited plateau from Module 6.
+
+**Device portability, in the exact lines that matter.** This is the same
+`train()` from Module 6, but here's the piece worth re-reading with a real
+GPU in mind:
+
+```python
+    device = next(model.parameters()).device
+    ...
+    for step in range(cfg.max_steps + 1):
+        ...
+        x, y = get_batch(data_t, cfg.batch_size, cfg.context_len, seed=seed)
+        x, y = x.to(device), y.to(device)
+```
+
+`device = next(model.parameters()).device` never hardcodes a device
+anywhere — it simply asks the model's own first parameter what device *it*
+currently lives on. On Colab, the notebook cell builds the model, then
+immediately moves it: `model = LlamaSLM(SMALL).to(device)` (with
+`device = "cuda"`), so by the time `train()` runs, every one of the
+model's parameters already lives on the GPU, and this line reads back
+`cuda:0`. Locally, nobody ever calls `.to("cuda")`, so the same line reads
+back `cpu`. Either way, `get_batch` itself always builds `x`/`y` on the
+CPU — it uses a private CPU `torch.Generator` for determinism (Module 3),
+which would break if that generator were ever asked to draw from a CUDA
+default device. The fix is exactly the line above: build the batch on CPU
+regardless, then explicitly move it, `x, y = x.to(device), y.to(device)`,
+onto wherever the model actually lives, right before the forward pass. One
+function, two devices, zero edits between the toy run and this one.
+
+### What we observed
+
+The Colab notebook (`notebooks/colab_train.ipynb`) streamed
+`load_tinystories("train", limit=200_000)` — 200,000 stories, chosen
+deliberately as a RAM-safe subset rather than the full ~1.9GB corpus,
+since even that streamed subset tokenizes into a **44,290,410-token**
+stream, and holding the *entire* dataset as a Python list risked
+overflowing Colab's roughly 12GB of RAM. Training ran with `lr=6e-4,
+warmup_steps=200, max_steps=20000, batch_size=64, context_len=512`, in
+fp32, on a free-tier Colab T4 GPU. Step-0 loss came in at **361.7** —
+another direct confirmation of Module 6's echo-bias math: just as `TOY`'s
+untrained loss (~62) tracked its own `d_model` of 64, `SMALL`'s untrained
+loss tracked its larger `d_model` of 384, because the dominant term in
+that starting loss is still the self-dot-product of a
+roughly-unit-variance embedding vector with itself. Loss fell into single
+digits within a few hundred steps, then declined gradually across the
+full 20,000 steps.
+
+The three resulting artifacts — `small.pt`, `small_tok.json`,
+`small_loss.png` — were downloaded from Colab into this project's local
+`checkpoints/`. Evaluating the downloaded checkpoint back on this local
+CPU box, against a fresh 500-story sample (30 batches), gave **loss
+1.81, perplexity 6.1** — compared to the toy run's `~4.3` loss / `~74`
+perplexity, and a uniform-guessing baseline of `ln(8192) ≈ 9.01` for
+`SMALL`'s larger vocabulary. Perplexity is just `e^loss` — intuitively,
+"on average, about how many tokens the model was genuinely torn between"
+for each prediction; `6.1` means the model has usually narrowed the field
+down to around six plausible next tokens, versus the toy run's `74` and a
+uniform guesser's `8192`.
+
+That drop in perplexity shows up directly in the generated text.
+Prompting the Colab-trained model with `"Once upon a time"` (temperature
+`0.8`, top_k `40`, seed `0`) produced:
+
+> Once upon a time, there was a little boy named Tim. Tim loved to take
+> pictures with his camera. One day, Tim went to the park with his mom. At
+> the park, Tim found a nice spot under a big tree. Tim saw a bird's
+> friend, Sarah. Tim asked, "Do you like my camera?" Sarah said, "Yes,
+> it's very pretty." Tim took a photo of Tim and kept it in his pocket.
+> They played and laughed and had fun. Soon
+
+Named characters, dialogue, a beginning-middle-arc shape, correct grammar
+throughout — real TinyStories prose, not the word-salad or half-formed
+clauses of the toy run's samples. A couple of small 14M-on-a-subset
+artifacts remain (Tim ends up taking "a photo of Tim"), but this is the
+coherence milestone Phase 1 was built toward: a hand-written model,
+trained by hand-written code, writing genuinely readable little stories.
+
+### Gotchas & design decisions
+
+**Colab's pip install had to stay minimal, or it broke the environment.**
+Installing this project's full, pinned `requirements.txt` on Colab pulled
+in a wall of resolver conflicts against Colab's own co-tuned
+`numpy`/`pandas`/`torch`/`google-colab` stack, and then crashed a live
+kernel with `ImportError: cannot import name '_center' from
+'numpy._core.umath'` — the numpy upgrade happened underneath a kernel that
+had already imported the *original* numpy, leaving its C extension and
+Python files at mismatched versions. `requirements.txt` is the right
+artifact for a fresh, empty environment (that's its whole reproducibility
+job, from Module 1), but the wrong one for Colab's already-populated one.
+The fix: the notebook's setup cell installs only this project's two
+direct extra dependencies, `pip install datasets tokenizers`, and leaves
+Colab's own torch/numpy/pandas alone entirely.
+
+**The GPU-saved checkpoint wouldn't load on this CPU-only box —
+`map_location="cpu"` again, this time for real.** Module 6 covered why
+`load_checkpoint` needs `map_location="cpu"` as a code-level fact;
+downloading `small.pt` straight off Colab is where that fact actually bit.
+`torch.save` had recorded every tensor's CUDA location from training on
+the T4, and loading the file locally without remapping failed with
+"Attempting to deserialize object on a CUDA device but
+torch.cuda.is_available() is False." Because `load_checkpoint` already
+remaps to CPU unconditionally, the fix required no new code at all here —
+it's the exact same line from Module 6, now earning its keep on a real,
+downloaded, GPU-trained file.
+
+**Scaling further was a deliberate choice to stop, not a limitation run
+into by accident.** TinyStories is, by design, a small, simple-vocabulary
+dataset (short children's stories) — it saturates in usable quality at
+tens of millions of parameters, and pushing `SMALL`'s config meaningfully
+larger would mostly slow down iteration and break the "runs instantly on
+a CPU for a demo" property this project cares about, without buying
+noticeably better stories from this particular dataset. 13.8M parameters
+was the point where TinyStories' own ceiling and this project's own
+"stays runnable everywhere" goal met in the middle.
+
+### Checkpoint
+
+1. What made scaling from `TOY` to `SMALL` a config change rather than a
+   code change?
+2. What does perplexity `6.1` mean in plain terms?
+
+**Explain it back:** why did we finish Phase 1 at ~14M params instead of
+going bigger?
