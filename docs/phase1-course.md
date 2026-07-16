@@ -657,3 +657,254 @@ save.
 
 **Explain it back:** walk through what BPE training actually does, step by
 step.
+
+## Module 3 — Data Pipeline: Batching and the Shift-by-One Target
+
+### Learning objectives
+
+By the end of this Module you'll be able to explain why language modeling's
+training signal comes for free from ordinary text, with no separate labeling
+step required; read the real `tokenize_texts` and `get_batch` functions and
+say what each line does; state the exact relationship between a batch's
+input `x` and its target `y`, in terms of both shapes and values; and
+explain why `load_tinystories` — the function that pulls down the real
+training corpus — is deliberately never called from the unit tests.
+
+### Frame
+
+Every supervised model needs labeled examples: an input, and the correct
+answer for that input. Language modeling gets this label for free — it's
+already sitting inside the raw text, with no separate annotation step
+required. Take any window of tokens, and the "correct answer" for what
+follows each token in that window is just whatever token actually comes
+next in the real text. So if your input window `x` is 12 tokens long, the
+target `y` for that exact same window is those same 12 tokens shifted one
+position to the left: `y` at every position holds whatever token really
+followed `x` at that position. That's the whole training signal for
+language modeling — no labels file, no human annotation, just the text
+itself, read one position ahead of where you started.
+
+This is exactly the tiny-array indexing from the Warm-Up, just applied to a
+much longer array: if `t` is the entire token stream and `s` is some
+starting position, `x = t[s : s+context_len]` and `y = t[s+1 :
+s+1+context_len]` — one slice, and that same slice again, shifted over by
+one. Because every position in `x` gets its own real target sitting right
+there in `y`, a single `context_len`-token input sequence doesn't hand you
+one training example — it hands you `context_len` of them simultaneously,
+one per position, all for the cost of a single forward pass.
+
+Before any of that windowing can happen, though, the raw text has to become
+one long, flat stream of token ids — that's what makes plain slicing
+possible in the first place. `tokenize_texts` builds that stream: it runs
+every document (story) through the tokenizer from Module 2, and glues all
+of their token-id lists end to end into one continuous list, inserting the
+reserved `<|endoftext|>` id (`0`, fixed there since Module 2) after each
+document so there's a concrete marker for where one story ends and the next
+begins. `get_batch` then does the windowing over that flat stream: given
+`batch_size`, `context_len`, and a `seed`, it picks `batch_size` random
+starting positions and, for each one, slices out both `x` (a
+`context_len`-token window starting there) and `y` (the same length window,
+starting exactly one token later).
+
+### Annotated code walkthrough
+
+Here's the real, current `src/slm/data.py`, in full:
+
+```python
+import torch
+from tokenizers import Tokenizer
+
+EOT_ID = 0
+
+
+def tokenize_texts(tok: Tokenizer, texts: list[str]) -> list[int]:
+    stream: list[int] = []
+    for t in texts:
+        stream.extend(tok.encode(t).ids)
+        stream.append(EOT_ID)
+    return stream
+
+
+def get_batch(data, batch_size: int, context_len: int, seed: int):
+    # Accept a pre-built tensor (cheap) or a list (converted once). At scale,
+    # re-tensorizing a multi-million-token list every call dominates runtime,
+    # so train() passes a tensor built once before the loop.
+    g = torch.Generator().manual_seed(seed)
+    t = data if isinstance(data, torch.Tensor) else torch.tensor(data, dtype=torch.long)
+    max_start = len(t) - context_len - 1
+    assert max_start > 0, "not enough tokens for one context window"
+    starts = torch.randint(0, max_start, (batch_size,), generator=g)
+    x = torch.stack([t[s : s + context_len] for s in starts])
+    y = torch.stack([t[s + 1 : s + 1 + context_len] for s in starts])
+    return x, y
+
+
+def load_tinystories(split: str = "train", limit: int | None = None) -> list[str]:
+    """Real dataset loader for training runs (not used in unit tests).
+
+    When `limit` is set (e.g. the local toy run), stream the dataset and take
+    only the first `limit` stories, so we avoid downloading the full ~1.9GB
+    corpus just to use a few thousand. When `limit` is None (the Colab `small`
+    run), download the whole split.
+    """
+    from datasets import load_dataset
+    if limit is not None:
+        ds = load_dataset("roneneldan/TinyStories", split=split, streaming=True)
+        out = []
+        for row in ds:
+            out.append(row["text"])
+            if len(out) >= limit:
+                break
+        return out
+    ds = load_dataset("roneneldan/TinyStories", split=split)
+    return [row["text"] for row in ds]
+```
+
+`tokenize_texts` and `get_batch` are the two functions every real training
+batch actually flows through; `load_tinystories` gets its own discussion in
+Gotchas below. Walking through the first two line by line:
+
+`tokenize_texts`:
+
+- `stream: list[int] = []` starts an empty flat list that will hold every
+  token id from every document, back to back, with nothing yet marking
+  where one document's tokens stop and the next one's start.
+- for each text `t`, `stream.extend(tok.encode(t).ids)` appends that one
+  story's token ids onto the end of the running stream (using the same
+  `encode` behavior built in Module 2).
+- `stream.append(EOT_ID)` appends id `0` — `<|endoftext|>` — right after
+  each story's tokens, so the finished stream reads
+  `[story tokens][0][story tokens][0]...`. That single id is the only
+  marker of document boundaries anywhere in this pipeline; nothing
+  downstream needs to track story boundaries separately.
+- the function returns that one flat list of ids. From here on, the data is
+  just one long sequence of integers — the windowing that `get_batch` does
+  next has no idea, and doesn't need to know, where the original document
+  boundaries were, beyond the `0`s baked into the stream itself.
+
+`get_batch`:
+
+- `g = torch.Generator().manual_seed(seed)` creates a private random-number
+  generator seeded with the given `seed`, instead of drawing from PyTorch's
+  global RNG. That's what makes `get_batch` deterministic on its own terms:
+  call it twice with the same `seed` and the same `data`, and you get back
+  the exact same batch, every time (confirmed directly below in "What we
+  observed").
+- `t = data if isinstance(data, torch.Tensor) else torch.tensor(data,
+  dtype=torch.long)` accepts either a plain Python list (like the one
+  `tokenize_texts` returns) or an already-built tensor, and only pays the
+  cost of converting to a tensor when it actually has to. The comment right
+  above it explains why that matters: re-converting a multi-million-token
+  list to a tensor on every single call would dominate training time, so
+  the real training loop builds the tensor once, up front, and passes that
+  same tensor into `get_batch` on every subsequent call.
+- `max_start = len(t) - context_len - 1` is the last position in the stream
+  from which you could still slice out a full `context_len`-token window
+  *and* one more token past it for that window's shifted target — start any
+  later than this and the slice would run off the end of the stream.
+- `assert max_start > 0, "not enough tokens for one context window"` fails
+  fast and explicitly if the data is too short to produce even one valid
+  window — see Gotchas below for why that matters in practice.
+- `starts = torch.randint(0, max_start, (batch_size,), generator=g)` draws
+  `batch_size` random starting positions, each between `0` and `max_start`,
+  using the private generator from above — so this draw, too, is fully
+  determined by `seed`.
+- `x = torch.stack([t[s : s + context_len] for s in starts])` slices out one
+  `context_len`-token window per starting position and stacks them into a
+  single tensor of shape `(batch_size, context_len)`.
+- `y = torch.stack([t[s + 1 : s + 1 + context_len] for s in starts])` does
+  the exact same slicing, from the exact same starting positions — just
+  shifted one token later. This is the whole shift-by-one target from the
+  Frame section above, written as two slices that differ only by that `+1`.
+- the function returns `(x, y)`: the input batch and its target batch, both
+  shaped `(batch_size, context_len)`.
+
+### What we observed
+
+`tests/test_data.py` confirms the two properties above directly against
+real code: `test_tokenize_inserts_eot` checks that `0` really does show up
+in `tokenize_texts`'s output stream, and `test_batch_shapes_and_shift`
+checks both `x.shape == (4, 8)` and `y.shape == (4, 8)` for a `batch_size=4,
+context_len=8` call, plus `torch.equal(x[:, 1:], y[:, :-1])` — i.e., every
+`x` value except its first column lines up exactly with every `y` value
+except its last column, which is the shift-by-one written as a tensor
+equality instead of prose.
+
+The project's DEVLOG makes that shift concrete by decoding an actual batch
+back to text. From `DEVLOG.md` (2026-07-07):
+
+> Printed a real batch and decoded it back to text to see the shift-by-one
+> target directly: with `context_len=12`, `x[0]` decoded to `'kled above as
+> the t'` and `y[0]` decoded to `'led above as the tw'` — the same window,
+> slid forward by exactly one token.
+
+Re-running that same idea fresh for this course, against the same
+`tests/fixtures/tiny_stories.txt` fixture and the same `get_batch(...,
+batch_size=4, context_len=12, seed=0)` call, gives:
+
+```
+x.shape torch.Size([4, 12])   y.shape torch.Size([4, 12])
+x[0] ids: [70, 85, 76, 268, 288, 14, 0, 47, 78, 67, 69, 290]
+y[0] ids: [85, 76, 268, 288, 14, 0, 47, 78, 67, 69, 290, 80]
+x[0] decoded: 'ful day.Once u'
+y[0] decoded: 'ul day.Once up'
+```
+
+Looking at the raw ids makes the shift unambiguous: `y[0]`'s first eleven
+ids (`85, 76, 268, 288, 14, 0, 47, 78, 67, 69, 290`) are exactly `x[0]`'s
+last eleven ids, and `y[0]` picks up one brand-new id (`80`) at the end that
+`x[0]` never had. That's the shift-by-one at the level of actual token ids,
+not just visually similar decoded strings. It's also worth noticing id `0`
+sitting right in the middle of both lists, at `x[0]`'s 7th position — that's
+an `<|endoftext|>` boundary from `tokenize_texts`, inserted between two
+different stories in the fixture. `decode()` hides id `0` from the printed
+text (it isn't `<|endoftext|>` in the output at all), which is exactly why
+`'ful day.'` and `'Once u'` butt up against each other in the decoded string
+with nothing visibly between them — invisibly, in the ids, there's a clean
+document boundary sitting right there.
+
+### Gotchas & design decisions
+
+**`load_tinystories` is deliberately never used by the unit tests.** Real
+training needs the actual TinyStories corpus (roughly 1.9GB, pulled via the
+Hugging Face `datasets` library). `load_tinystories` supports two modes:
+give it a `limit`, and it streams the dataset (`streaming=True`) and stops
+after collecting the first `limit` stories, so a small toy run never has to
+download the full corpus just to use a few thousand stories; leave `limit`
+as `None`, and it downloads the entire split (the Colab `small` run in
+Module 7 uses this path). But even the streaming path still touches a live
+network and an external, upstream-hosted dataset — exactly the kind of
+dependency a unit test should never have (network flakiness, CI slowness,
+the dataset itself changing upstream). So `tests/test_data.py` never calls
+`load_tinystories` at all. Instead, every test in that file builds its data
+from `tests/fixtures/tiny_stories.txt`, a 30-line fixture checked directly
+into the repo. The tests still exercise the exact same `tokenize_texts` and
+`get_batch` code paths that real training uses — just against tiny, static,
+offline text instead of the real dataset, so the whole test suite stays
+fast, deterministic, and network-free.
+
+**Determinism is scoped to the call, not global.** `get_batch`'s
+`torch.Generator().manual_seed(seed)` is a private generator, not a call to
+`torch.manual_seed(seed)` — this project's `test_batch_is_deterministic_with_seed`
+test confirms two separate `get_batch` calls with `seed=0` against the same
+data return the identical batch. Because that generator is private to the
+one call, `get_batch`'s determinism doesn't depend on — and doesn't
+disturb — whatever else in the program might be drawing from PyTorch's
+global RNG elsewhere (weight initialization, for instance).
+
+**The `assert max_start > 0` is a deliberate fail-fast, not defensive
+noise.** If `context_len` is close to, or larger than, the length of the
+actual token stream you hand `get_batch` — which happens immediately if you
+try to batch from too little data, like accidentally pointing it at a
+handful of tokens while asking for a long context window — the function
+fails immediately with a clear message, rather than silently returning
+malformed or wrapped-around windows that would quietly corrupt training.
+
+### Checkpoint
+
+1. Why does one input sequence give you a prediction target at *every*
+   position, not just the end?
+2. What exactly is the relationship between `x` and `y` in a batch?
+
+**Explain it back:** why must the unit tests never download the real
+TinyStories dataset?
