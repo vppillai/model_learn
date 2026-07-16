@@ -290,7 +290,7 @@ does softmax do, and what does a rotation do?
 
 ### Learning objectives
 
-By the end of this Module you'll be able to explain what a virtual
+By the end of this module you'll be able to explain what a virtual
 environment buys a project that a shared, global Python install doesn't;
 explain the difference between what `pyproject.toml` asks for and what
 `uv.lock` actually pins; and explain why a dependency pin that's exactly
@@ -471,7 +471,7 @@ why use one here?
 
 ### Learning objectives
 
-By the end of this Module you'll be able to explain why a tokenizer has to
+By the end of this module you'll be able to explain why a tokenizer has to
 exist at all before any model code runs; explain, step by step, what BPE
 training actually does to arrive at a vocabulary; read the real
 `train_tokenizer`/`load_tokenizer`/`encode`/`decode` functions and say what
@@ -662,7 +662,7 @@ step.
 
 ### Learning objectives
 
-By the end of this Module you'll be able to explain why language modeling's
+By the end of this module you'll be able to explain why language modeling's
 training signal comes for free from ordinary text, with no separate labeling
 step required; read the real `tokenize_texts` and `get_batch` functions and
 say what each line does; state the exact relationship between a batch's
@@ -850,7 +850,11 @@ x[0] decoded: 'ful day.Once u'
 y[0] decoded: 'ul day.Once up'
 ```
 
-Looking at the raw ids makes the shift unambiguous: `y[0]`'s first eleven
+These decoded strings don't match the DEVLOG excerpt verbatim — expected,
+since that snippet was captured against different underlying data at that
+point in the project, not this exact fixture/run. What matters is that
+both runs show the identical shift-by-one relationship. Looking at the
+raw ids makes that shift unambiguous: `y[0]`'s first eleven
 ids (`85, 76, 268, 288, 14, 0, 47, 78, 67, 69, 290`) are exactly `x[0]`'s
 last eleven ids, and `y[0]` picks up one brand-new id (`80`) at the end that
 `x[0]` never had. That's the shift-by-one at the level of actual token ids,
@@ -875,7 +879,7 @@ downloads the entire split instead. The real Colab `small` run (Module 7
 covers it in full) takes the first path, not the second — its data-loading
 cell calls `load_tinystories("train", limit=200_000)`, a RAM-safe streaming
 subset chosen deliberately: the notebook's own notes explain that 200,000
-stories (~47M tokens) is already plenty for coherent little stories from
+stories (~44M tokens) is already plenty for coherent little stories from
 its 14M-parameter model, while holding the *entire* dataset in a Python
 list would overflow Colab's roughly 12GB of RAM. But even the streaming
 path still touches a live network and an external, upstream-hosted
@@ -919,7 +923,7 @@ TinyStories dataset?
 
 ### Learning objectives
 
-By the end of this Module you'll be able to explain what each of the four core
+By the end of this module you'll be able to explain what each of the four core
 transformer pieces does and why it exists: read the real `RMSNorm` and say why
 it rescales a token vector by its own root-mean-square (and why it does that
 arithmetic in float32); read the real `build_rope_cache`/`rotate_half`/`apply_rope`
@@ -1492,8 +1496,8 @@ class LlamaSLM(nn.Module):
 
 Read the pieces in order:
 
-- `embed_tokens` is the `(vocab_size, d_model)` lookup table from Module 4's
-  embedding discussion — one row per possible token id.
+- `embed_tokens` is the `(vocab_size, d_model)` lookup table — one row per
+  possible token id.
 - `layers` is a stack of `n_layers` identical `Block`s (`TOY` uses 2, `SMALL`
   uses 6).
 - `self.norm` is the single final norm applied after the last block, before
@@ -2254,7 +2258,7 @@ byte-level BPE vocabulary trained on far more text), `d_model` grows
 (`head_dim` `16 → 64`), the SwiGLU workspace grows 8-fold (`ffn_hidden`
 `128 → 1024`), and the context window quadruples (`128 → 512` tokens of
 history the model can look back on). Feeding `SMALL` into the exact same
-`ModelConfig.n_params()` from Module 4's params-by-component discussion
+`ModelConfig.n_params()` (pure arithmetic over the config fields)
 gives **13,767,552** — the number this project rounds to "13.8M params,"
 and notably the *same* number `n_params()` predicted before any Colab run
 ever happened, since it's pure arithmetic over the config fields. `TOY`,
@@ -2389,7 +2393,7 @@ going bigger?
 
 ### Learning objectives
 
-By the end of this Module you'll be able to: explain what the "Hugging Face
+By the end of this module you'll be able to: explain what the "Hugging Face
 format" concretely consists of, and why that specific shape is what lets any
 tool in the ecosystem open your model with zero custom code; read the real
 `to_hf_config`, `_copy_weights_into_hf`, `export_to_hf`, and `push` functions
@@ -2683,7 +2687,7 @@ with no custom code at all?
 
 ### Learning objectives
 
-By the end of this Module you'll be able to: explain what makes a `.gguf`
+By the end of this module you'll be able to: explain what makes a `.gguf`
 file "self-describing" and why that removes the need for any separate
 config file; read the real `scripts/convert_to_gguf.sh` and
 `scripts/Modelfile`, in full, and explain what each stage of the pipeline
@@ -2964,7 +2968,7 @@ way to `ollama run`.
 
 ### Learning objectives
 
-By the end of this Module you'll be able to: name the three stages of Module
+By the end of this module you'll be able to: name the three stages of Module
 9's GGUF pipeline using compiler vocabulary — export to IR, optimization
 pass, codegen + runtime — instead of GGUF-specific vocabulary; explain why
 `llama-quantize` counts as an optimization pass rather than a mere format
