@@ -2379,3 +2379,578 @@ was the point where TinyStories' own ceiling and this project's own
 
 **Explain it back:** why did we finish Phase 1 at ~14M params instead of
 going bigger?
+
+## Module 8 — Packaging to Hugging Face Format
+
+### Learning objectives
+
+By the end of this Module you'll be able to: explain what the "Hugging Face
+format" concretely consists of, and why that specific shape is what lets any
+tool in the ecosystem open your model with zero custom code; read the real
+`to_hf_config`, `_copy_weights_into_hf`, `export_to_hf`, and `push` functions
+in `src/slm/export_hf.py`, in full, and say what each one is responsible for;
+state the round-trip test's actual measured result and explain precisely
+what that number proves (and what it would mean instead if it were large);
+explain why `to_hf_config` overrides Llama's default special-token ids
+rather than leaving them alone, and what a downstream user would experience
+if that override were missing; and describe, from firsthand project
+experience, the correct response the instant a write-scoped credential ends
+up somewhere it can be seen.
+
+### Frame
+
+At the end of Module 7 you have exactly two files that matter:
+`checkpoints/small.pt` (the trained weights plus the `ModelConfig` dict, in a
+layout only this project's own `save_checkpoint`/`load_checkpoint` know how
+to open) and `checkpoints/small_tok.json` (this project's own tokenizer).
+Every tool used so far to load them — `load_checkpoint`, `LlamaSLM`,
+`sample.py` — is code written earlier in this course. Nothing outside this
+project has any idea what `small.pt`'s dictionary keys mean.
+
+"Packaging to Hugging Face format" is the step that fixes that, and it's
+worth being precise about what it actually is: not a rewrite, not a
+re-implementation — a *repackaging*. The target shape is a plain directory
+holding three kinds of files the whole open-source LLM ecosystem already
+agrees on: `config.json` (a plain-text architecture spec — hidden size,
+layer count, head count, vocabulary size, and, critically, the special-token
+ids), one or more `model.safetensors` files (the weights themselves, in a
+safe, memory-mappable container — unlike a pickled `.bin` file, safetensors
+cannot execute arbitrary code on load, which is the modern reason it's the
+default), and a handful of tokenizer files (`tokenizer.json`,
+`tokenizer_config.json`, and friends) describing how to turn text into ids
+and back. Any tool built against `transformers` — `from_pretrained`, the
+GGUF converter Module 9 uses, the Hub's own model viewer — already knows how
+to read exactly that shape, with nothing project-specific to teach it.
+
+The reason this repackaging works with a plain weight *copy*, rather than
+something lossier, traces back to a deliberate choice already flagged in
+Module 4's Gotchas: this project matched stock Llama's architecture
+faithfully on purpose — RMSNorm computed in float32 the way the official
+implementation does, the same RoPE convention, the same SwiGLU shape —
+specifically so that this moment would work. Think of the hand-built
+`LlamaSLM` weights as a compiled binary, and Hugging Face format as
+repackaging that same binary into the shipping container every dock on the
+pipeline — `transformers`, the GGUF converter, the Hub — already knows how
+to unload, no custom forklift required.
+
+### Annotated code walkthrough
+
+Here's the real, current `src/slm/export_hf.py`, in full:
+
+```python
+import torch
+from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+from slm.config import ModelConfig
+from slm.model import LlamaSLM
+from slm.train import load_checkpoint
+
+
+def to_hf_config(cfg: ModelConfig) -> LlamaConfig:
+    return LlamaConfig(
+        vocab_size=cfg.vocab_size,
+        hidden_size=cfg.d_model,
+        intermediate_size=cfg.ffn_hidden,
+        num_hidden_layers=cfg.n_layers,
+        num_attention_heads=cfg.n_heads,
+        num_key_value_heads=cfg.n_kv_heads,
+        head_dim=cfg.head_dim,
+        max_position_embeddings=cfg.context_len,
+        rms_norm_eps=cfg.rms_norm_eps,
+        rope_theta=cfg.rope_theta,
+        tie_word_embeddings=cfg.tie_embeddings,
+        attention_bias=False,
+        mlp_bias=False,
+        hidden_act="silu",
+        # Our tokenizer's <|endoftext|> is id 0 and serves as BOS/EOS/PAD.
+        # Without this, LlamaConfig defaults (bos=1, eos=2) would tell runtimes
+        # to stop on the wrong token, so generation never ends at a story break.
+        bos_token_id=0,
+        eos_token_id=0,
+        pad_token_id=0,
+    )
+
+
+def _copy_weights_into_hf(src: LlamaSLM, hf: LlamaForCausalLM):
+    sd = {}
+    sd["model.embed_tokens.weight"] = src.embed_tokens.weight
+    for i, blk in enumerate(src.layers):
+        p = f"model.layers.{i}."
+        sd[p + "input_layernorm.weight"] = blk.norm1.weight
+        sd[p + "post_attention_layernorm.weight"] = blk.norm2.weight
+        sd[p + "self_attn.q_proj.weight"] = blk.attn.q_proj.weight
+        sd[p + "self_attn.k_proj.weight"] = blk.attn.k_proj.weight
+        sd[p + "self_attn.v_proj.weight"] = blk.attn.v_proj.weight
+        sd[p + "self_attn.o_proj.weight"] = blk.attn.o_proj.weight
+        sd[p + "mlp.gate_proj.weight"] = blk.mlp.gate_proj.weight
+        sd[p + "mlp.up_proj.weight"] = blk.mlp.up_proj.weight
+        sd[p + "mlp.down_proj.weight"] = blk.mlp.down_proj.weight
+    sd["model.norm.weight"] = src.norm.weight
+    sd["lm_head.weight"] = src.lm_head.weight
+    hf.load_state_dict(sd, strict=True)
+
+
+def export_to_hf(ckpt_path: str, tok_path: str, out_dir: str) -> str:
+    src, cfg = load_checkpoint(ckpt_path)
+    src.eval()
+    hf = LlamaForCausalLM(to_hf_config(cfg)).eval()
+    _copy_weights_into_hf(src, hf)
+    hf.save_pretrained(out_dir)
+    fast = PreTrainedTokenizerFast(
+        tokenizer_file=tok_path,
+        eos_token="<|endoftext|>", bos_token="<|endoftext|>",
+        unk_token="<|endoftext|>", pad_token="<|endoftext|>",
+    )
+    fast.save_pretrained(out_dir)
+    return out_dir
+
+
+def push(out_dir: str, repo_id: str, private: bool = True):
+    from huggingface_hub import HfApi
+    HfApi().create_repo(repo_id, exist_ok=True, private=private)
+    LlamaForCausalLM.from_pretrained(out_dir).push_to_hub(repo_id, private=private)
+    PreTrainedTokenizerFast.from_pretrained(out_dir).push_to_hub(repo_id, private=private)
+    # The model card (README.md) isn't loaded by from_pretrained; upload it too.
+    import os
+    readme = os.path.join(out_dir, "README.md")
+    if os.path.exists(readme):
+        HfApi().upload_file(path_or_fileobj=readme, path_in_repo="README.md",
+                            repo_id=repo_id, repo_type="model")
+```
+
+**`to_hf_config` — translating our config into theirs.** `ModelConfig`
+(Module 1) and `LlamaConfig` (stock `transformers`) describe the same
+architecture with different field names and different defaults, and this
+function is a pure field-by-field translation between them: our `d_model`
+becomes their `hidden_size`, our `ffn_hidden` becomes their
+`intermediate_size`, our `n_layers`/`n_heads`/`n_kv_heads`/`head_dim` map
+straight across, and `tie_word_embeddings=cfg.tie_embeddings` carries over
+the exact weight-tying decision from Module 5 (where `tie_embeddings=True`
+made `lm_head.weight` and `embed_tokens.weight` the literal same tensor) —
+HF represents that identical fact as `tie_word_embeddings: true` in the
+exported `config.json`. `attention_bias=False`, `mlp_bias=False`, and
+`hidden_act="silu"` pin down the parts of stock Llama's config surface that
+match this project's architecture: no bias terms anywhere, and the SwiGLU
+activation from Module 4. The three lines at the bottom —
+`bos_token_id=0`, `eos_token_id=0`, `pad_token_id=0` — are the one place
+this function actively *overrides* a Llama default instead of translating a
+field, and the comment explains why: Module 2 fixed this project's
+`<|endoftext|>` at token id `0`, the *only* special token, doing
+BOS/EOS/PAD duty all at once, but `LlamaConfig`'s own defaults are
+`bos_token_id=1, eos_token_id=2` — ids that mean nothing in this project's
+8,192-token vocabulary. More on why that override matters below.
+
+**`_copy_weights_into_hf` — the same tensors, new names, zero
+re-computation.** This function moves not one floating-point number: it
+builds a dict, `sd`, mapping HF's expected state-dict keys directly onto
+`LlamaSLM`'s live tensors — `src.embed_tokens.weight`, `blk.norm1.weight`,
+`blk.attn.q_proj.weight`, and so on — then calls
+`hf.load_state_dict(sd, strict=True)`. `strict=True` means: if a single key
+is missing, or a single extra key is present, this line raises instead of
+silently loading a partial model. Every name on the left
+(`model.layers.{i}.input_layernorm.weight`, `self_attn.q_proj.weight`,
+`mlp.gate_proj.weight`, …) is stock `LlamaForCausalLM`'s naming convention;
+every value on the right is this project's own `Block`'s attribute
+(`norm1`/`norm2`/`attn`/`mlp`, from Module 4/5). The loop over `src.layers`
+handles all `n_layers` blocks identically, and the two lines above and
+below it handle the embedding table and the tied `lm_head` at the top and
+bottom of the stack. Because the *shapes* and *math* of `LlamaSLM` and
+`LlamaForCausalLM` are already identical (that architectural-fidelity
+choice from Module 4, again), this is purely a renaming exercise — nothing
+here recomputes or approximates anything.
+
+**`export_to_hf` — the whole pipeline, one call.** `load_checkpoint(ckpt_path)`
+(Module 6/7's function, `map_location="cpu"` and all) rehydrates the trained
+`LlamaSLM` and its `ModelConfig` from `small.pt`; a fresh, empty
+`LlamaForCausalLM(to_hf_config(cfg))` is constructed; `_copy_weights_into_hf`
+fills it; `hf.save_pretrained(out_dir)` writes `config.json` +
+`model.safetensors` (plus a `generation_config.json`) to disk. The tokenizer
+side is separate and deliberate: rather than re-deriving anything from this
+project's own tokenizer file, `export_to_hf` wraps it directly in HF's
+`PreTrainedTokenizerFast`, explicitly declaring `<|endoftext|>` as all four
+of `eos_token`/`bos_token`/`unk_token`/`pad_token` — the HF-side mirror of
+the same one-token-does-everything design from Module 2 — then calls
+`fast.save_pretrained(out_dir)` to write the tokenizer files alongside the
+model files.
+
+**`push` — uploading, plus the one file `push_to_hub` forgets.**
+`HfApi().create_repo(repo_id, exist_ok=True, private=private)` creates the
+Hub repo (a no-op if it already exists); loading the just-exported model and
+tokenizer back with `from_pretrained(out_dir)` and calling
+`.push_to_hub(repo_id, private=private)` on each uploads the weights,
+config, and tokenizer files. The comment on the next line flags something
+worth noticing: `push_to_hub()` only uploads what `from_pretrained` itself
+loads — model weights and tokenizer files — and a model card (`README.md`,
+the human-facing page the Hub renders as the model's front page) isn't one
+of those things, so the function checks for `out_dir`'s `README.md` and, if
+present, uploads it explicitly via `HfApi().upload_file(...)`. Skip that
+check and the model would technically be on the Hub, but its page would
+render blank — no description, no usage example, no license.
+
+### What we observed
+
+`tests/test_export.py`'s `test_hf_roundtrip_matches_handbuilt` builds a
+fresh, untrained `LlamaSLM(TOY)`, builds an empty
+`LlamaForCausalLM(to_hf_config(TOY))`, copies the weights across with
+`_copy_weights_into_hf`, feeds both the *same* random token ids, and
+asserts `torch.allclose(a, b, atol=1e-4)` — a tolerance the actual result
+blew past by more than an order of magnitude. Running the real export
+against the trained `small` checkpoint measured a maximum absolute logit
+difference of **9.54 × 10⁻⁶** (mean difference **8.78 × 10⁻⁷**, this
+project's own shorthand for it: "~9.5e-06") between the hand-built
+`LlamaSLM`'s forward pass and stock `LlamaForCausalLM`'s forward pass, on
+identical inputs — a gap this small is floating-point rounding noise, not
+an architectural difference. Module 4's Gotchas section promised this
+exact number would show up here — "a round-trip check of max-abs-difference
+around `1e-5` … the correctness linchpin the export in Module 8 depends
+on" — and it did, on the first run, with no debugging required. That's the
+actual proof, in numbers, that the from-scratch `LlamaSLM` this course
+built starting in Module 4 isn't merely "Llama-like": it is, weight-for-
+weight, the same architecture as the official `LlamaForCausalLM`, to within
+float noise. Had that diff instead come out large — comparable to the
+logits' own scale rather than a sliver of it — it would mean the two models
+were computing genuinely different functions, and no amount of weight-
+copying trickery would make the export trustworthy.
+
+With that verified, the trained `small` checkpoint was exported to
+`export/tinystories-slm/` (`config.json`, `model.safetensors`, and the
+tokenizer files) and loaded back with plain, stock `transformers` — no
+project code involved at all — confirming it still generates the same kind
+of coherent TinyStories prose Module 7 already showed. It was then
+published to a **private** Hub repository, `vysakhpillai/tinystories-slm`,
+holding the weights, config, tokenizer files, and model card.
+
+### Gotchas & design decisions
+
+**Gotcha — the exported config first shipped Llama's default
+`eos_token_id=2`, so generation never stopped.** Before `to_hf_config` set
+`bos_token_id=eos_token_id=pad_token_id=0` explicitly, the exported
+`config.json` carried `LlamaConfig`'s ordinary defaults, `bos_token_id=1,
+eos_token_id=2` — perfectly sensible for a model whose vocabulary actually
+assigns tokens 1 and 2 to BOS and EOS, meaningless for this project's
+vocabulary, where those slots are just two more ordinary story tokens and
+the *real* end-of-text marker is id `0`. `model.generate()` decides when to
+stop by checking whether the model just emitted `eos_token_id` — so with
+the default in place, it would keep generating indefinitely (up to
+`max_new_tokens`), never recognizing this model's own `<|endoftext|>` as a
+signal to stop. The fix was the three-line override already in the
+walkthrough above; the observable effect, verified directly, was that five
+of six sampled generations then stopped early exactly at a story break,
+instead of all six running to the max length. This is the same id-0 fact
+Module 2 established when it fixed `<|endoftext|>` as this tokenizer's only
+special token — Module 8 is just the moment that fact has to be
+re-declared in a second, HF-shaped config file, or the two disagree.
+
+**Design decision — the Hub username doesn't have to match the GitHub
+username, and here it doesn't.** This project's code lives on GitHub as
+`vppillai`, but the Hugging Face account used to publish is a separate
+identity, `vysakhpillai` — the two platforms have entirely independent
+namespaces. The repo id passed to `push()` had to be the HF-namespaced
+`vysakhpillai/tinystories-slm`, and the model card's own usage examples
+needed the same correction, since a copy-pasted `vppillai/tinystories-slm`
+would simply 404.
+
+**Security — a write-scoped token ended up somewhere it could be seen, and
+the only correct response is to treat it as already compromised.** While
+authenticating to the Hub during this task, a write token (value redacted)
+was pasted into the chat used to drive this session. A token with write
+scope can push, delete, or overwrite repositories under that account — so
+the instant a secret like that lands anywhere it might be logged,
+screenshotted, or reviewed by anyone else, the right move isn't to hope
+nobody looks: it's to revoke or rotate it immediately, at
+huggingface.co/settings/tokens, and only re-authenticate afterward. This
+project's actual response was exactly that — flag it and revoke it — and
+the durable lesson generalizes well past Hugging Face: prefer short-lived,
+read-only tokens for anything routine, reserve write scope for the one
+moment it's actually needed, and treat "this credential was ever visible
+somewhere it shouldn't have been" as equivalent to "this credential is
+compromised," full stop, regardless of how the exposure happened.
+
+### Checkpoint
+
+1. Why does the round-trip logit diff of ~1e-5 matter — what does it prove?
+2. What breaks downstream if the exported `config.json` keeps Llama's
+   default `eos_token_id=2`?
+
+**Explain it back:** why can our hand-built model load into `transformers`
+with no custom code at all?
+
+## Module 9 — GGUF, Quantization, and Ollama
+
+### Learning objectives
+
+By the end of this Module you'll be able to: explain what makes a `.gguf`
+file "self-describing" and why that removes the need for any separate
+config file; read the real `scripts/convert_to_gguf.sh` and
+`scripts/Modelfile`, in full, and explain what each stage of the pipeline
+does; read Lab 07's header-parsing code and explain exactly what a GGUF
+header contains and why its two numbers (tensor count, metadata count)
+matter; state the real file sizes this project produced at each
+quantization level and explain what quantization trades away to get them;
+and trace, from firsthand experience, the entire path a model takes from a
+trained checkpoint file to a running `ollama run` session.
+
+### Frame
+
+Module 8 ended with the model sitting in Hugging Face format — a directory
+`transformers`-based tools can open. That's already enough for a GPU server
+running Python. But the actual finish line for this project is different:
+run the hand-built model on an ordinary CPU, through the same lightweight
+tooling millions of people already use to run downloaded models locally.
+That tooling is `llama.cpp` (the inference engine) and Ollama (a friendly
+wrapper around it), and neither one speaks `safetensors`/`config.json` —
+they speak one specific container format, **GGUF**.
+
+A GGUF file is a single, self-describing binary: a short header (a magic
+number, a format version, how many tensors follow, how many metadata
+entries follow), then all the tensors (the weights themselves), then the
+metadata key-values (architecture name, hyperparameters, tokenizer details)
+a runtime needs to know how to run the model at all. "Self-describing" is
+the key word — unlike the HF directory from Module 8, where the weights
+(`model.safetensors`) and the architecture spec (`config.json`) are two
+separate files that have to be kept in sync, a GGUF file carries both in
+one place, so `llama.cpp`/Ollama can load *just* the `.gguf` and know
+everything they need.
+
+Getting from Module 8's HF directory to a running Ollama model is a short
+pipeline with two moves worth naming precisely, because the same two moves
+show up in every deployment story for every model format: first,
+**convert** the HF directory into GGUF's IR (a straight structural
+translation, no precision loss — this project's `f16` GGUF); second,
+**quantize** — an optimization pass that lowers the numeric precision of
+the weights to shrink the file and speed up CPU inference, trading away a
+small, controllable amount of quality. The inference engine, `llama.cpp`,
+is the last piece: it loads a `.gguf`, picks CPU kernels suited to the
+machine it's running on, and executes the forward pass token by token;
+Ollama wraps that same engine with model management and the one-line
+`ollama run <name>` experience. Module 10 steps back from these specific
+file formats and names the general shape this whole pipeline is one
+instance of.
+
+### Annotated code walkthrough
+
+Here's the real, current `scripts/convert_to_gguf.sh`, in full:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+# Convert the exported HF model to GGUF, then quantize.
+#
+# Prereqs (one-time):
+#   git clone --depth 1 https://github.com/ggerganov/llama.cpp ~/llama.cpp
+#   uv pip install gguf sentencepiece protobuf          # converter deps
+#   cd ~/llama.cpp && uv run cmake -B build -DLLAMA_CURL=OFF \
+#     && uv run cmake --build build -j 4                # -j 4: avoid OOM on small boxes
+#
+# Run from the model_learn repo root:  bash scripts/convert_to_gguf.sh
+LLAMA_CPP="${LLAMA_CPP:-$HOME/llama.cpp}"
+SRC="export/tinystories-slm"
+OUT="export"
+QUANT="$LLAMA_CPP/build/bin/llama-quantize"
+
+# 1. Export to GGUF IR (f16). The converter is pure Python; run it with the
+#    project venv (which has gguf/torch/transformers/safetensors).
+uv run python "$LLAMA_CPP/convert_hf_to_gguf.py" "$SRC" \
+  --outfile "$OUT/tinystories-slm-f16.gguf" --outtype f16
+
+# 2. Optimization pass: quantize f16 -> Q8_0 (near-lossless) and Q4_K_M (small).
+"$QUANT" "$OUT/tinystories-slm-f16.gguf" "$OUT/tinystories-slm-Q8_0.gguf"   Q8_0
+"$QUANT" "$OUT/tinystories-slm-f16.gguf" "$OUT/tinystories-slm-Q4_K_M.gguf" Q4_K_M
+
+echo "Wrote f16, Q8_0, Q4_K_M GGUFs to $OUT/"
+ls -lh "$OUT"/tinystories-slm-*.gguf
+```
+
+**Stage 1 — `convert_hf_to_gguf.py`, the export-to-IR step.** This is
+llama.cpp's own converter, not project code, and it takes the Module 8
+output directory (`export/tinystories-slm`, holding `config.json` +
+`model.safetensors` + tokenizer files) and produces
+`tinystories-slm-f16.gguf`: every weight re-encoded at 16-bit float
+precision, plus the full metadata (architecture, hyperparameters,
+tokenizer) the runtime will need — no quantization has happened yet at this
+step, only a container-format change. It's run with `uv run`, this
+project's own venv, specifically because that venv is the one place with
+`gguf`/`torch`/`transformers`/`safetensors` all installed together; the
+converter script itself lives inside the separately-cloned `~/llama.cpp`
+checkout, not this repo.
+
+**Stage 2 — `llama-quantize`, the optimization pass.** `llama-quantize` is
+a compiled binary (built by the `cmake --build` step in the prerequisites
+comment) that reads the f16 GGUF and writes a new GGUF with weights
+re-encoded at lower precision — `Q8_0` and `Q4_K_M` here, run back-to-back
+against the same f16 source so both quantized files derive from the
+identical, unquantized starting point. Neither invocation touches the
+original `f16` file; all three GGUFs — `f16`, `Q8_0`, `Q4_K_M` — end up
+sitting side by side in `export/`, so any one of them can be handed to
+`llama.cpp` or Ollama directly. The prerequisites comment at the top
+documents `cmake --build build -j 4`, capping the build to 4 parallel
+compiler jobs instead of letting it use every core on the box — why, is in
+the Gotchas below.
+
+Here's the real, current `scripts/Modelfile`, in full:
+
+```
+FROM ./export/tinystories-slm-Q4_K_M.gguf
+PARAMETER temperature 0.8
+PARAMETER top_k 40
+PARAMETER stop "<|endoftext|>"
+TEMPLATE """{{ .Prompt }}"""
+```
+
+**Line by line.** `FROM ./export/tinystories-slm-Q4_K_M.gguf` names the
+single GGUF file this Ollama model is built from — the *smallest*, most
+aggressively quantized one of the three, chosen deliberately for the
+fastest CPU inference at acceptable quality. The two `PARAMETER` lines set
+inference defaults baked into the Ollama model itself, so nobody running
+`ollama run tinystories-slm` needs to remember to pass them: `temperature
+0.8` and `top_k 40` are the exact same sampling settings Module 6/7 already
+used from `sample.py`, and `stop "<|endoftext|>"` tells Ollama's own
+generation loop to stop the moment this project's one special token
+appears — the Ollama-side counterpart to Module 8's `eos_token_id=0` fix,
+enforced here at the sampling-loop level instead of inside `config.json`.
+`TEMPLATE """{{ .Prompt }}"""` is deliberately the simplest template Ollama
+supports: no chat-formatting, no role markers, no system-prompt
+scaffolding — just the raw prompt text handed straight to the model,
+because this is a plain story-completion model, not an instruction-tuned
+chat model, and any chat template would just inject tokens this
+tokenizer's vocabulary and training never saw.
+
+**Reading a GGUF's header, for real.** Lab 07
+(`labs/lab07_gguf_teardown.py`) makes "self-describing" concrete by reading
+nothing but the header, by hand, with no library:
+
+```python
+import struct, sys
+
+path = sys.argv[1] if len(sys.argv) > 1 else "export/tinystories-slm-Q8_0.gguf"
+with open(path, "rb") as f:
+    magic = f.read(4)
+    version, = struct.unpack("<I", f.read(4))
+    n_tensors, = struct.unpack("<Q", f.read(8))
+    n_kv, = struct.unpack("<Q", f.read(8))
+```
+
+Four fixed-size reads, in order, are the entire GGUF header: 4 raw bytes
+for `magic` (expected to literally spell `GGUF`, a sanity check any reader
+can perform before trusting the rest of the file), then three
+little-endian integers unpacked with `struct.unpack` — a 4-byte unsigned
+int for the format `version`, then two 8-byte unsigned ints for
+`n_tensors` (how many weight tensors follow) and `n_kv` (how many metadata
+key-value entries follow). Everything after those 24 bytes is exactly
+`n_tensors` tensor descriptors followed by exactly `n_kv` metadata entries.
+The header alone already tells a runtime precisely how much more there is
+to read and of what kind — which is exactly what "self-describing" cashes
+out to, in concrete bytes.
+
+### What we observed
+
+Running `scripts/convert_to_gguf.sh` produced three files in `export/`:
+`tinystories-slm-f16.gguf` at **27MB**, `tinystories-slm-Q8_0.gguf` at
+**15MB**, and `tinystories-slm-Q4_K_M.gguf` at **11MB** — corresponding to
+**16.0**, **8.51**, and **6.21** bits per weight respectively. Q8_0's 8.51
+bits (slightly above its nominal 8) comes from a small, fixed per-block
+scale factor stored alongside the 8-bit weights; Q4_K_M's 6.21 bits (well
+above its nominal ~4) is explained by the next paragraph.
+
+Lab 07's header read against the Q8_0 file reported **56 tensors** and
+**34 metadata entries** — the concrete, observed instance of "header +
+tensors + metadata" from the Frame above. Running the same lab against the
+Q4_K_M file makes a quieter but important point: **36 of those same 56
+tensors fell back to a higher precision than Q4_K_M's nominal 4 bits**, not
+because anything went wrong, but because Q4_K_M's block-quantization
+scheme needs a tensor's dimensions to divide evenly into its block
+structure, and several of this small model's tensor shapes (`d_model=384`,
+`head_dim=64`, `ffn_hidden=1024` — all comparatively small by
+production-model standards) don't line up cleanly enough, so
+`llama-quantize` stores those specific tensors at higher precision rather
+than quantizing them incorrectly. It's shape-driven and benign — a real,
+slightly-surprising number this project's own tools produced, not a sign
+of a broken export.
+
+Lab 08 (`labs/lab08_quant_compare.py`) then compares generation itself, not
+just file size: it loops over all three quant levels, and for each one
+that exists on disk, runs `llama-cli` once with a fixed prompt (`"Once
+upon a time"`), a fixed seed (`0`), and a 40-token cap, using `-st`
+(single-turn — exits after one generation instead of dropping into
+`llama-cli`'s interactive REPL, which would otherwise hang the lab's
+`subprocess.run` call) plus `--simple-io`/`--no-warmup`/`--no-display-prompt`
+to keep the captured output to just the generated story. All three quant
+levels — f16, Q8_0, Q4_K_M — produced fluent, coherent TinyStories-style
+prose from the identical prompt and seed; the *text itself* differed
+slightly between quant levels, because quantization perturbs the model's
+logits by a small amount and sampling is sensitive to small logit changes —
+but coherence held all the way down to the smallest, most aggressively
+quantized file.
+
+The actual finish line: with Ollama running and `scripts/Modelfile`
+registered under the name `tinystories-slm`, `ollama run tinystories-slm
+"Once upon a time"` produced, on ordinary CPU:
+
+> Once upon a time, there was a little girl named Lily. She loved to play
+> outside in the park. One day, she saw a big tree and wanted to climb it. But
+> when she tried to climb the tree, she slipped and fell. Her knee hurt a lot!
+> She started to cry because she couldn't reach the top of the tree. Her mom
+> came running over and asked what happened. Lily told her that she was hurt and
+> needed to rest. Her mom gave her some medicine and told her to rest when she
+> was tired. After resting, ...
+
+A hand-built tokenizer (Module 2), a hand-built transformer (Module 4/5),
+trained by hand-written training code (Module 6/7), exported to a standard
+format (Module 8), quantized down to 11MB, and run through the exact same
+engine people use to run downloaded Llama models — generating a coherent,
+punctuated, readable children's story, entirely on CPU.
+
+### Gotchas & design decisions
+
+**Gotcha — building llama.cpp at full parallelism ran this machine out of
+memory.** The natural instinct, `cmake --build build` with no job cap,
+spawns one compiler process per CPU core — on this box, 14 — and
+llama.cpp's largest source files (model-family backends like `t5.cpp`,
+`hunyuan-vl.cpp`) each need enough memory per compiler instance that 14 of
+them running at once exceeded the box's roughly 11GB of RAM, killed with
+`Killed signal terminated program cc1plus`. The fix already visible in the
+prerequisites comment, `cmake --build build -j 4`, caps it to 4 concurrent
+compiler processes; because `make`-style builds are incremental, re-running
+with the lower job count resumed from the object files already compiled
+rather than starting over.
+
+**Gotcha — the GGUF converter didn't recognize this project's own
+tokenizer.** `convert_hf_to_gguf.py` identifies *which* BPE tokenizer a
+model uses by hashing a specific pre-tokenizer test string and checking
+that hash against a hardcoded table of known tokenizers — it doesn't
+inspect a fresh, custom-trained tokenizer's rules directly. This project's
+tokenizer (Module 2's byte-level BPE, trained from scratch on TinyStories)
+produces a hash the converter had never seen, `fe391dc4...`, so conversion
+failed outright with `NotImplementedError: BPE pre-tokenizer was not
+recognized`. The tokenizer genuinely *is* a standard GPT-2-style
+byte-level BPE, just trained on this project's own data instead of
+downloaded pre-trained — so the fix was registering that specific hash as
+`"gpt-2"` in llama.cpp's own conversion code (`get_vocab_base_pre`), after
+which the converter proceeded normally and the resulting GGUF records
+`tokenizer.ggml.pre = gpt-2` in its metadata — exactly the kind of metadata
+entry Lab 07's header count is pointing at.
+
+**Design decision — Ollama needed a manually-started daemon, the `zstd`
+package, and an absolute `FROM` path.** Three separate small frictions, all
+environment-specific rather than code bugs: the official Ollama installer
+failed the first time with "This version requires zstd for extraction"
+until `zstd` was installed via the system package manager; on this VM,
+systemd didn't auto-start the Ollama daemon after install, so `ollama
+serve` had to be started by hand before `ollama create`/`ollama run` would
+work at all; and Ollama 0.31.2 specifically rejected the Modelfile's clean,
+repo-relative `FROM ./export/tinystories-slm-Q4_K_M.gguf` with `400 Bad
+Request: invalid model name`, because that Ollama version treats a
+relative-looking `FROM` value as a model-name reference rather than a
+filesystem path — the fix was rewriting it to an absolute path for the
+actual `ollama create` invocation, even though `scripts/Modelfile` itself is
+kept in the cleaner relative form shown above for readability.
+
+### Checkpoint
+
+1. What does "self-describing" mean for a GGUF file, and why does it need
+   no separate config?
+2. Why does the same prompt and seed produce slightly different text
+   across quant levels?
+3. What is the Modelfile's job on top of the GGUF file itself?
+
+**Explain it back:** trace the file, end to end, from `small.pt` all the
+way to `ollama run`.
