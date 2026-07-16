@@ -1350,11 +1350,16 @@ suit to stay architecturally faithful.
 
 **No GQA in Phase 1 (`n_kv_heads == n_heads`).** Some larger models save memory
 with *grouped-query attention*, where several Query heads share a single Key/Value
-head (`n_kv_heads < n_heads`). The code above already supports that — notice
-`k_proj` and `v_proj` size themselves off `n_kv_heads` while `q_proj` uses
-`n_heads`. But in this project's configs those two counts are equal (`TOY` uses
-`n_heads=4, n_kv_heads=4`), so every Query head gets its own Key/Value head and
-there's no grouping. The machinery is present; Phase 1 simply doesn't turn it on.
+head (`n_kv_heads < n_heads`). Notice `k_proj` and `v_proj` are already sized off
+`n_kv_heads` while `q_proj` uses `n_heads` — but enabling real grouping
+(`n_kv_heads < n_heads`) would additionally need a key/value-repeat step in the
+forward pass (each shared K/V head expanded to line up with its group of Query
+heads), which this code omits because the counts are equal in Phase 1. `TOY`
+uses `n_heads=4, n_kv_heads=4`, so every Query head gets its own Key/Value head
+and the `q @ k.transpose(-2, -1)` line broadcasts cleanly. Set `n_kv_heads=2`
+without adding that repeat step and the forward pass raises a shape-mismatch
+`RuntimeError` — so this isn't a dormant feature waiting to be flipped on, it's a
+simplification Phase 1 makes on purpose.
 
 **The float32 RMSNorm trick is required for the HF numerical match.** The
 `x = x.float()` / `x.to(dtype)` dance in RMSNorm isn't cosmetic. The stock Llama
