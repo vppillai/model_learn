@@ -400,9 +400,10 @@ revision = 3
 requires-python = ">=3.13"
 ```
 
-For the Colab notebook (Module 7), the environment isn't a `uv`-managed
-venv at all — it's Colab's own pre-built Python image — so instead of
-shipping `uv.lock`, this project generates a plain `requirements.txt` with:
+Outside this project's own `uv`-managed venv — anywhere a plain `pip
+install -r requirements.txt` is the expected install path rather than a
+`uv`-native one — this project also exports a portable `requirements.txt`
+with:
 
 ```bash
 uv export --no-hashes --format requirements-txt --no-emit-package torch -o requirements.txt
@@ -438,19 +439,23 @@ to resolve from PyTorch's dedicated CPU-only index instead. Re-running `uv
 sync` after adding the pin dropped the venv to about 1.1GB and installed
 `torch==2.12.1+cpu` — roughly 3.7GB of unused CUDA machinery gone.
 
-**Gotcha 2 — that same pin then leaked into the Colab-bound
+**Gotcha 2 — that same pin risked leaking a CPU-only `torch` into
 `requirements.txt`.** A naive `uv export` propagates whatever `torch` is
 actually pinned to, so the first `requirements.txt` said
-`torch==2.12.1+cpu` for every platform. Installing that on Colab would have
-replaced Colab's own preinstalled, GPU-matched `torch` with a CPU build —
-silently killing GPU acceleration for the training run in Module 7,
-without the Colab notebook throwing an obvious error until training turned
-out to be running on CPU. The fix: exclude `torch` from the export entirely
-with `--no-emit-package torch`, since Colab already ships a working GPU
-`torch` and this project's own code (`import torch`) doesn't care which
-`torch` provided it, as long as one is present. The Colab notebook (Module
-7) states explicitly that `requirements.txt` intentionally omits `torch`,
-so a future reader isn't confused by its absence.
+`torch==2.12.1+cpu` for every platform — installing that on any GPU
+machine would replace a working GPU `torch` with a CPU build, silently
+killing GPU acceleration. The fix: exclude `torch` from the export
+entirely with `--no-emit-package torch`, since a GPU host already ships
+its own matched `torch`, and this project's own code (`import torch`)
+doesn't care which `torch` provided it, as long as one is present. On
+Colab specifically (Module 7 covers the full run), the notebook doesn't
+install from `requirements.txt` at all — its setup cell runs a minimal
+`pip install datasets tokenizers` instead, because even with `torch`
+excluded, the rest of `requirements.txt` still pins a full transitive
+dependency tree that conflicts with Colab's own co-tuned
+`numpy`/`pandas`/`torch`. `requirements.txt` is the right artifact for a
+fresh, empty environment; Colab's already-populated one calls for the
+narrower install instead.
 
 ### Checkpoint
 
