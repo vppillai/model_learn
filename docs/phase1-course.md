@@ -2954,3 +2954,473 @@ kept in the cleaner relative form shown above for readability.
 
 **Explain it back:** trace the file, end to end, from `small.pt` all the
 way to `ollama run`.
+
+## Module 10 — The Transferable Mental Model: Model Compilers
+
+### Learning objectives
+
+By the end of this Module you'll be able to: name the three stages of Module
+9's GGUF pipeline using compiler vocabulary — export to IR, optimization
+pass, codegen + runtime — instead of GGUF-specific vocabulary; explain why
+`llama-quantize` counts as an optimization pass rather than a mere format
+change; recognize the same three-stage shape in other inference stacks
+(ONNX Runtime, TVM, MLIR/IREE, TensorRT, OpenVINO, MLC-LLM, and vendor
+toolchains like Tenstorrent's MLIR/Metalium) without needing to learn each
+one from scratch; and state, from memory, the four-step mental model for
+deploying a trained model onto a new piece of hardware.
+
+### Frame
+
+Every Module from 1 through 9 taught you a specific piece of *this*
+project: a specific tokenizer, a specific architecture, a specific training
+loop, a specific export path. This Module is different — it doesn't teach
+you anything new to build. Instead, it renames what Module 9 already did,
+and that renaming is the actual payoff of the whole course.
+
+Look back at what Module 9's pipeline did, stripped of its GGUF-specific
+words: it took a trained model living in one framework's native
+representation (Hugging Face's `config.json` + `safetensors`), translated
+it into a portable, self-describing intermediate format, then applied a
+pass that changed *how* the model is represented internally (numeric
+precision) without changing *what* it computes, and finally handed the
+result to a runtime that picks concrete, hardware-suited kernels and
+executes them. That is not a GGUF-specific story — it's the generic shape
+every "run this trained model somewhere new" story takes. Once you can
+name the shape, you can walk into an unfamiliar toolchain, built by a
+different vendor for completely different silicon, and immediately know
+which question to ask at each stage: what's the IR here, what optimization
+passes does this stack run, and what does codegen and runtime look like for
+this hardware?
+
+That's the whole reframe: the GGUF path you just walked with your own
+hands, end to end, *is* a miniature model compiler. Naming its stages once
+is what lets the mental model travel to hardware this course never
+touches.
+
+### Annotated mapping
+
+There's no new code in this Module — the "walkthrough" here is relabeling
+the exact three moves Module 9 already made real, in the order you ran
+them:
+
+- **`convert_hf_to_gguf.py` = export to IR.** Module 9's first stage took
+  the Module 8 HF directory (`config.json` + `model.safetensors` +
+  tokenizer files — one framework's native format) and produced a `.gguf`
+  file: a different container, the same computation, no precision change
+  yet. That's exactly what "export to an intermediate representation"
+  means in any compiler — leave the source framework's native format
+  behind for a portable one that downstream tools agree on, without
+  altering what the model computes.
+
+- **`llama-quantize` (f16 → Q8_0 → Q4_K_M) = an optimization pass.** Module
+  9's second stage read the f16 GGUF and wrote new GGUFs with weights
+  re-encoded at lower numeric precision. Nothing about the model's
+  *architecture* changed — same tensors, same shapes, same metadata — only
+  the numeric representation each weight is stored and computed in. That's
+  precisely what an optimization pass is in any compiler: a transformation
+  applied to the IR that changes performance characteristics (here, file
+  size and CPU inference speed) while preserving the computation it
+  represents, at a small, controlled quality cost.
+
+- **llama.cpp/Ollama picking CPU kernels at load = codegen + runtime.**
+  When `llama.cpp` (or Ollama, wrapping it) loads a `.gguf` file, it
+  doesn't just replay the file — it selects concrete, hardware-suited
+  kernels for the machine it's actually running on and executes the
+  forward pass token by token. That selection-and-execution step is
+  codegen (choosing the concrete instructions for this hardware) plus
+  runtime (actually running them), rolled into one load-and-go experience.
+
+### What we observed / where it generalizes
+
+Nothing new was run for this Module — "what we observed" here is a second
+look at Module 9's own results, through the compiler lens instead of the
+GGUF-specific one. The three real files this project produced
+(`tinystories-slm-f16.gguf` at 27MB, `-Q8_0.gguf` at 15MB, `-Q4_K_M.gguf`
+at 11MB) are three optimization-pass outputs derived from the same
+exported IR; the coherent stories `ollama run` produced from all three are
+proof the optimization pass preserved the computation while changing its
+cost profile — exactly what "an optimization pass, not a rewrite" is
+supposed to mean.
+
+The reason this three-stage shape is worth memorizing is that it isn't
+specific to `llama.cpp` at all. **ONNX Runtime** exports models to the ONNX
+IR, runs graph-optimization passes (operator fusion, constant folding,
+precision conversion) over that IR, then executes with hardware-specific
+"execution providers." **TVM** and **MLIR/IREE** are, structurally,
+compiler frameworks doing the same job more generally: import a model into
+an IR, run a sequence of lowering/optimization passes, generate code for a
+specific backend. **TensorRT** and **OpenVINO** are vendor-specific
+versions of the same shape, tuned for NVIDIA and Intel hardware
+respectively. **MLC-LLM** runs this exact shape specifically for large
+language models across a wide range of target devices. And vendor
+toolchains you'll meet in your own day job — Tenstorrent's MLIR/Metalium
+stack included — are, at this level of abstraction, one more instance of
+the same three moves: export to an IR, lower/optimize that IR, generate
+and run hardware-specific code.
+
+Once "convert a model for a target" clicks at this level of abstraction,
+deploying a Hugging Face model onto custom hardware — any custom hardware
+— stops looking like an unfamiliar, vendor-specific black box and starts
+looking like a recipe you already know by heart: **export → IR →
+lower/optimize → hardware engine.** Phase 4 of this project picks that
+recipe back up and walks it against real hardware; this Module's only job
+was to make sure you'd recognize the shape when you got there.
+
+### Gotchas & design decisions
+
+**This Module is the deliberate bridge, not a coincidence.** Every other
+Module in this course ends by pointing forward to the next specific build
+step. This one is different on purpose: it's the point in the course where
+the specific tools — `llama.cpp`, Ollama, GGUF — step out of the way so
+the *shape underneath them* can stand on its own. That shape is what's
+meant to survive the trip from this project's CPU/Ollama finish line to a
+completely different hardware stack — your day job's, MLIR/Metalium and
+all — where none of Module 9's specific file formats or command-line tools
+will be waiting for you, but the four-step recipe still applies.
+
+**The mapping is a mental model, not a spec.** "Export to IR," "optimization
+pass," and "codegen + runtime" are deliberately loose categories, not a
+rigid three-stage standard every compiler literally implements with those
+exact boundaries — some stacks fold quantization into export, some split
+codegen and runtime into separate tools, some run dozens of optimization
+passes instead of one. The value of the mental model isn't that every
+toolchain matches it exactly; it's that it hands you a short list of
+questions — what's the IR, what gets optimized, what actually executes —
+that works as a first pass on *any* unfamiliar stack, including ones this
+course never names.
+
+**Resist the urge to over-claim what comes next.** It's tempting to read
+"Tenstorrent's MLIR/Metalium toolchain" above and assume this course is
+about to walk that toolchain the way Modules 1–9 walked `llama.cpp`. It
+isn't — that's explicitly future work, not this course's job, and nothing
+here should be read as a claim about specifically how that later work will
+go. What this Module hands off is the concept, deliberately, ahead of the
+concrete tools.
+
+### Checkpoint
+
+1. Map each of the three GGUF-path stages to its model-compiler role: which
+   Module 9 tool is the "export to IR" step, which is the "optimization
+   pass," and which is "codegen + runtime"?
+2. Why is `llama-quantize` an "optimization pass" rather than a format
+   change? What stays the same about the model, and what changes?
+3. Name at least two other inference stacks (besides `llama.cpp`) that
+   follow this same three-stage shape.
+
+**Explain it back:** state the four-step mental model for deploying a
+model onto new hardware, in your own words, without naming GGUF,
+`llama.cpp`, or Ollama once.
+
+## Glossary
+
+**Attention / causal mask** — Each token produces a Query ("what am I
+looking for"), a Key ("what I offer"), and a Value ("what I contain").
+Attention scores every token's Query against every other token's Key,
+turns those scores into weights with softmax, then blends Values by those
+weights — the only place tokens exchange information. The causal mask
+forces a token to attend only to itself and earlier tokens, never future
+ones, since future tokens don't exist yet at generation time; Module 4
+verifies this directly by showing that perturbing only the last token of a
+sequence leaves every earlier position's output unchanged.
+
+**Autoregressive generation** — Generating text one token at a time: run
+the model, sample a next token from its output distribution, append it to
+the sequence, and repeat with the now-longer sequence. Each new token
+becomes part of the input used to predict the next one. Module 5 walks the
+actual generation loop this idea compiles down to.
+
+**Batch** — Multiple independent training examples processed together in
+one forward pass, shaped `(batch_size, context_len)`, so many sequences get
+processed in parallel per gradient step instead of one at a time. Module 3
+builds the function that assembles a batch by drawing random starting
+positions from the token stream.
+
+**BPE (byte-pair encoding)** — The training algorithm behind this project's
+tokenizer: start from raw bytes, then repeatedly merge the most frequent
+adjacent pair into one new token, until the vocabulary reaches its target
+size. Common chunks end up as single tokens; rare stuff stays as smaller
+pieces, so nothing is ever "unrepresentable." Module 2 watches merges form
+as the vocabulary size grows.
+
+**Byte-level pre-tokenization / the `Ġ` symbol** — Operating on raw UTF-8
+bytes instead of Unicode characters means any input is representable, with
+no "unknown token" ever needed. A side effect: the space byte gets
+remapped to the visible symbol `Ġ` in printed tokens (a GPT-2-era
+convention), so `Ġcat` means "a space followed by `cat`" — a different
+token from a bare `cat` appearing mid-word. Module 2 covers this in
+detail.
+
+**Checkpoint** — A saved snapshot of a model: its learned weights plus the
+config needed to rebuild its architecture, so training can be resumed or
+the model loaded for inference later. Storing the config as a plain dict,
+rather than a pickled object, means the file can be loaded safely without
+ever unpickling arbitrary code from a downloaded file. Module 6 introduces
+saving and loading a checkpoint; Module 7 loads one that was trained on a
+different device than it's read on.
+
+**`config.json`** — The plain-text spec that tells any runtime how to
+interpret a model's weights: hidden size, layer count, head count,
+vocabulary size, normalization epsilon, RoPE's angle constant, and the
+special-token ids. Getting the special-token ids right matters in
+particular — declaring the right end-of-text token as the stop signal is
+what makes generation actually stop. Module 8 covers writing this file as
+part of packaging to Hugging Face format.
+
+**Context window / sequence length (`context_len`)** — How many tokens the
+model looks at, and predicts within, in one forward pass. A longer context
+window lets the model use more preceding text to predict the next token,
+but attention's cost grows with sequence length, so it isn't free to make
+arbitrarily long. Module 3 introduces it as part of the batching function.
+
+**`d_model` (hidden size)** — The length of the vector used to represent
+one token as it flows through the network: every internal representation —
+attention output, feed-forward output, everything — is a vector of exactly
+this length. A bigger `d_model` means richer per-token representations, but
+more parameters everywhere a token vector is touched. The Warm-Up
+introduces the `(batch, seq, d_model)` shape convention this rests on;
+Module 4 builds the pieces that operate on it.
+
+**Device (CPU vs GPU) / device portability** — Tensors and a model live on
+a specific device — the CPU or a CUDA GPU — and an operation needs all its
+inputs on the same device. A GPU does the many small matrix multiplies of
+training massively in parallel, so a real training run is
+minutes-per-epoch on a GPU versus hours-plus on CPU. "Device-portable"
+code runs unchanged on either, which is exactly what lets the same
+training function train on a laptop's CPU and a Colab GPU with no edits —
+Module 7 walks the exact lines that make that true.
+
+**Embedding table** — The matrix bridging token ids and token vectors,
+shaped `(vocab_size, d_model)`, with one row per possible token id. Row *i*
+is the vector used to represent token id *i* — a plain lookup, always the
+same row for the same id, with no idea what surrounds it at lookup time.
+Module 5 assembles it into the full model and shows what happens when it
+doubles as the output projection too.
+
+**GGUF (container format)** — The single-file format `llama.cpp`/Ollama
+consume: a self-describing binary holding a header, all the tensors
+(weights), and metadata key-values (architecture, hyperparameters,
+tokenizer). "Self-describing" means the runtime reads the file itself to
+learn how to run the model, with no separate config file needed. Module 9
+reads a real GGUF header byte by byte to make that concrete.
+
+**Gradient clipping** — A safety cap on the total magnitude of the gradient
+each training step. If one freak batch produces an enormous gradient,
+clipping scales it down before the optimizer step, preventing a single
+update from yanking the weights off a cliff. Module 6 covers it alongside
+the rest of the training loop.
+
+**HF format** — The standard container the whole open-source LLM ecosystem
+understands: a directory holding `config.json` (the architecture spec),
+`model.safetensors` (the weights), and tokenizer files. Repackaging a
+hand-built model into this format is not a rewrite — it's a straight
+weight copy into the shipping container every downstream tool already
+knows how to open. Module 8 walks the actual repackaging step.
+
+**How the embedding table learns despite being context-blind** — The
+embedding table's *lookup* never looks at context, but the *values* in
+each row are still shaped by it: during training, a token's row feeds into
+attention and the feed-forward block, contributes to the loss, and
+backpropagation sends a context-shaped gradient back into that exact row.
+The same token id appears in countless different contexts across the
+training data, so its row settles into a compromise that works reasonably
+well everywhere it appears — disambiguating meaning *by* context isn't the
+embedding table's job at all, that happens downstream in attention (Module
+4), which combines this fixed starting vector with whatever tokens are
+actually nearby.
+
+**Inference engine (`llama.cpp` / Ollama)** — The runtime that actually
+executes a model: it loads a GGUF file, picks CPU kernels suited to the
+machine it's running on, and runs the forward pass token by token.
+`llama.cpp` is the engine itself; Ollama wraps it with model management and
+a simple one-line run command. Module 9 walks both.
+
+**Learning-rate schedule (warmup + cosine decay)** — The learning rate
+isn't held constant during training. It ramps up linearly from near-zero
+over a fixed number of warmup steps, so early, wild gradients don't blow
+up freshly random weights, then decays smoothly along a cosine curve back
+toward zero, so late training takes small, careful steps to settle. Module
+6 derives and walks the exact function that computes it.
+
+**Lockfile (`uv.lock`)** — The exact, fully-resolved set of package
+versions — down to the specific build — that satisfies a project's looser
+dependency constraints. The dependency file expresses *intent* (a version
+range); the lockfile is the *reproducible result*, so anyone syncing
+against the same lockfile gets byte-identical dependency versions. Module
+1 covers the distinction in full.
+
+**Logits** — The raw, unnormalized scores a model outputs for each
+possible next token: one number per vocabulary entry, before softmax turns
+them into a probability distribution. Module 5 shows the model producing
+logits of shape `(batch, context_len, vocab_size)`.
+
+**Loss / cross-entropy** — The single number measuring how wrong a model's
+predictions are: it compares the predicted probability distribution
+against the actual next token, penalizing confident-and-wrong answers far
+more than merely uncertain ones. Lower is better; a model guessing
+uniformly over the vocabulary gives a known, computable baseline loss,
+which is why an untrained model with the tied-embedding "echo" bias
+actually starts *above* that baseline — confidently wrong, not just
+uncertain, as Module 6 measures with real numbers.
+
+**Model card (`README.md`)** — The human-facing documentation shipped
+alongside a model on the Hugging Face Hub: what the model is, its training
+data, its config, its intended use, and its limitations. Uploading a
+model's weights doesn't upload this file automatically — it has to be
+pushed explicitly, as Module 8 shows.
+
+**Model compiler / deep-learning compiler** — The mental model that names
+the general shape of "convert a trained model to run somewhere new": export
+the model into a portable intermediate representation, run one or more
+optimization passes over that representation, then generate and execute
+hardware-specific code. Module 9's GGUF pipeline is one concrete instance
+of this shape; Module 10 is the Module that names it explicitly and shows
+where else the same shape appears.
+
+**Modelfile** — Ollama's recipe for packaging a model: a `FROM` line
+naming the GGUF file, plus inference defaults (temperature, top-k, a stop
+token) and a prompt template. Registering one is what makes a one-line
+`ollama run <name>` command work. Module 9 walks a real one line by line.
+
+**Next-token target (the shift-by-one)** — Language modeling's core
+training signal: for an input window of tokens, the target is the *same
+window shifted one position left*, so at every position the target holds
+whatever token actually came next. One input sequence therefore yields a
+supervised training example at every position simultaneously. Module 3
+confirms this directly by decoding a real input/target pair and showing
+one is the other, slid forward by exactly one token.
+
+**Optimizer / AdamW** — The algorithm that actually updates each parameter
+using its gradient. AdamW adapts the step size per-parameter using running
+averages of recent gradients, and applies weight decay to gently pull
+weights toward zero as a form of regularization — the standard default
+choice for training transformers. Module 6 wires it into the training
+loop.
+
+**Overfitting one batch** — A debugging technique: deliberately train on a
+single fixed batch over and over until the loss drops to nearly zero. It's
+the fastest proof that learning works at all — if a model can't even
+memorize one batch, something in the gradient flow, loss computation, or
+wiring is broken, and it's only worth spending time on a real dataset once
+this passes. Module 6 walks the test that checks it.
+
+**Parameter** — A single learnable number inside a model. "14 million
+parameters" means 14 million such numbers, each nudged a little on every
+training step; Module 7 states the real, computed parameter count for this
+project's trained model.
+
+**Pre-norm residual block** — The repeating pattern inside a transformer:
+`x = x + attn(norm(x))`, then `x = x + mlp(norm(x))`. The residual (`x = x
++ ...`) means each sub-layer only has to learn a correction to add on top
+of its input rather than reconstruct the whole representation from
+scratch, which is also why the original input's direction persists
+strongly through a deep stack. "Pre-norm" means normalization happens
+before each sub-layer rather than after, which trains more stably at depth
+than the original design; Module 5 assembles the real block and traces
+exactly why that persistence matters.
+
+**Q8_0 vs Q4_K_M** — Two quantization schemes with different trade-offs.
+Q8_0 is simple 8-bit quantization, near-lossless; Q4_K_M is a roughly
+4-bit "K-quant" that mixes precisions across a tensor — giving sensitive
+weights more bits — to stay coherent at about half the file size. Module 9
+measures the real file sizes and bits-per-weight each one produced.
+
+**Quantization** — Storing a model's weights at lower numeric precision to
+shrink its file size and speed up CPU inference, trading away a small,
+controllable amount of quality. Because quantization perturbs the
+resulting logits slightly, the same prompt and random seed can produce
+slightly different generated text at each quantization level. Module 9
+runs this project's model at three precision levels and compares the
+output.
+
+**RMSNorm** — A normalization layer that rescales each token's vector by
+its own root-mean-square magnitude, keeping numbers in a healthy range as
+they flow through many stacked layers (left unnormalized, magnitudes drift
+and destabilize training). It's a cheaper cousin of LayerNorm — it skips
+mean-subtraction and only rescales — which is why Llama and most modern
+LLMs use it. Module 4 builds it, and the Warm-Up supplies the underlying
+arithmetic.
+
+**RoPE (rotary positional encoding)** — Injects word-order information
+into attention by *rotating* each token's query and key vector by an angle
+proportional to its position, with later tokens rotating further. Rotation
+preserves a vector's length — it never stretches or shrinks it, only spins
+it — and the payoff is that the relationship between a rotated query and
+key ends up depending only on their *relative* distance, not their
+absolute positions. Module 4 builds it and works a numeric example that
+confirms the relative-distance property directly.
+
+**Round-trip equivalence** — The test that a hand-built model and the
+official reference implementation produce *identical* logits for the same
+input, down to ordinary floating-point noise. It's the proof that a
+from-scratch architecture is genuinely the real thing, not merely "close"
+— and everything downstream (publishing, quantized export, running in
+other tools) depends on it holding. Module 8 covers the actual test and
+its measured result.
+
+**Safetensors** — A safe, fast weights-file format: just tensors plus
+metadata, memory-mappable, and — unlike a pickled file — incapable of
+executing arbitrary code on load. It's the modern default for
+distributing model weights; Module 8 uses it as part of packaging to
+Hugging Face format.
+
+**Special token (`<|endoftext|>`)** — A token that isn't natural text —
+it's inserted deliberately, here between documents, so the model can learn
+"this text ended, a new one begins." Module 2 covers why this token is
+fixed to id `0` by convention, and Modules 8 and 9 both rely on that fixed
+id downstream to make generation stop in the right place.
+
+**SwiGLU / feed-forward** — The per-token "private thinking" step, applied
+right after attention lets tokens exchange information. It expands each
+token's vector into a wider workspace, applies a gated nonlinearity, then
+projects back down to the model's normal width — with no cross-token
+interaction happening here at all, purely per-token processing. Module 4
+builds it.
+
+**Temperature / top-k sampling** — Two knobs that reshape a next-token
+probability distribution before sampling. Temperature divides logits
+before softmax: a low temperature sharpens the distribution (more
+confident, more repetitive), a high temperature flattens it (more random);
+top-k zeroes out every token outside the `k` most likely ones, so very
+unlikely tokens can never be picked regardless of temperature. Module 6
+isolates both knobs on a fixed set of logits to show the effect
+numerically.
+
+**Tied-embedding "echo" bias at initialization** — A surprising, real
+property of tied-embedding, pre-norm-residual transformers: *before any
+training at all*, the model strongly favors predicting the most recently
+seen token again. The cause is a two-step chain — residual connections
+keep the input token's embedding direction dominant in the final hidden
+state, and because the output projection reuses that same embedding matrix
+(weight tying), that token's self-dot-product logit vastly outscores every
+other token's cross-dot-product logit, saturating softmax to a probability
+near 1.0. It disappears entirely once the embeddings are untied; Module
+5's deep dive walks the full mechanism with real, measured numbers.
+
+**Token / token id** — A token is one "chunk" a tokenizer produces — a
+whole word, part of a word, or a single character or byte; the token id is
+the integer that represents it in the model's vocabulary. Module 2 covers
+how these are produced and shows real examples.
+
+**Tokenizer** — The function that converts text into a list of integers,
+and back again. Neural networks only operate on numbers, so this is the
+mandatory first translation step in any language-model pipeline. Module 2
+builds one from scratch.
+
+**Virtual environment (venv)** — An isolated Python installation and
+package directory scoped to one project, so its dependencies can't
+collide with other projects or the system Python. Module 1 covers
+creating and using one.
+
+**Vocabulary** — The full set of tokens a tokenizer knows, each mapped to
+a unique id. Its size is a real architecture cost: vocabulary size times
+hidden size is the size of the model's embedding table, so a bigger
+vocabulary means a bigger model at the same hidden size. Module 2 covers
+training a vocabulary to a specific target size.
+
+**Weight tying (input/output embeddings)** — Using the *same* matrix for a
+model's input embedding table and its output projection. This halves the
+model's single largest parameter block and ties "the meaning of a token
+going in" to "the score for that token coming out" — it's also the root
+cause of the untrained echo bias above. Module 5 introduces the design
+choice; Module 8 shows how Hugging Face format records the same fact in
+`config.json`.
