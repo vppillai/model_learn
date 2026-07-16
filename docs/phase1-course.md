@@ -2592,14 +2592,14 @@ render blank — no description, no usage example, no license.
 fresh, untrained `LlamaSLM(TOY)`, builds an empty
 `LlamaForCausalLM(to_hf_config(TOY))`, copies the weights across with
 `_copy_weights_into_hf`, feeds both the *same* random token ids, and
-asserts `torch.allclose(a, b, atol=1e-4)` — a tolerance the actual result
-blew past by more than an order of magnitude. Running the real export
-against the trained `small` checkpoint measured a maximum absolute logit
-difference of **9.54 × 10⁻⁶** (mean difference **8.78 × 10⁻⁷**, this
-project's own shorthand for it: "~9.5e-06") between the hand-built
-`LlamaSLM`'s forward pass and stock `LlamaForCausalLM`'s forward pass, on
-identical inputs — a gap this small is floating-point rounding noise, not
-an architectural difference. Module 4's Gotchas section promised this
+asserts `torch.allclose(a, b, atol=1e-4)` — a tolerance the actual run blew
+past by more than an order of magnitude. That test run — comparing the
+untrained `LlamaSLM(TOY)`'s forward pass against stock
+`LlamaForCausalLM`'s forward pass on the same random input ids, immediately
+after the weight copy — measured a maximum absolute logit difference of
+**9.54 × 10⁻⁶** (mean difference **8.78 × 10⁻⁷**, this project's own
+shorthand for it: "~9.5e-06") — a gap this small is floating-point rounding
+noise, not an architectural difference. Module 4's Gotchas section promised this
 exact number would show up here — "a round-trip check of max-abs-difference
 around `1e-5` … the correctness linchpin the export in Module 8 depends
 on" — and it did, on the first run, with no debugging required. That's the
@@ -2856,15 +2856,15 @@ Lab 07's header read against the Q8_0 file reported **56 tensors** and
 tensors + metadata" from the Frame above. Running the same lab against the
 Q4_K_M file makes a quieter but important point: **36 of those same 56
 tensors fell back to a higher precision than Q4_K_M's nominal 4 bits**, not
-because anything went wrong, but because Q4_K_M's block-quantization
-scheme needs a tensor's dimensions to divide evenly into its block
-structure, and several of this small model's tensor shapes (`d_model=384`,
-`head_dim=64`, `ffn_hidden=1024` — all comparatively small by
-production-model standards) don't line up cleanly enough, so
-`llama-quantize` stores those specific tensors at higher precision rather
-than quantizing them incorrectly. It's shape-driven and benign — a real,
-slightly-surprising number this project's own tools produced, not a sign
-of a broken export.
+because anything went wrong, but because their shapes don't fit Q4_K_M's
+block structure — Q4_K_M's block-quantization scheme needs a tensor's
+dimensions to divide evenly into its block size, and on a model this small
+(`d_model=384`, `head_dim=64`, `ffn_hidden=1024` — all comparatively small
+by production-model standards), several tensor dimensions likely fall
+short of what that block structure expects, so `llama-quantize` stores
+those specific tensors at higher precision rather than quantizing them
+incorrectly. It's shape-driven and benign — a real, slightly-surprising
+number this project's own tools produced, not a sign of a broken export.
 
 Lab 08 (`labs/lab08_quant_compare.py`) then compares generation itself, not
 just file size: it loops over all three quant levels, and for each one
