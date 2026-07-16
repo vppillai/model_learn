@@ -50,6 +50,13 @@ uploaded sources. Three rules follow and shape every decision below:
   for the genuinely hard bits (e.g. the echo-bias investigation, RoPE rotation intuition).
 - **Level:** Intuition-first, no heavy math — consistent with the project's learning profile
   and the existing `CONCEPTS.md` register.
+- **Math treatment (hybrid):** a *Math Warm-up* pre-session module introduces the handful of
+  numeric operations (vector/shape notation, dot product, matmul + `(batch, seq, d_model)` shape
+  rules, softmax, RMS-normalization, 2D rotation) on tiny 2–4 element arrays with the arithmetic
+  worked out. The dense modules additionally embed tiny in-context worked examples — a full
+  3-token attention computed by hand in Module 4, a tiny cross-entropy in Module 6. Because
+  NotebookLM cannot run code, every illustrative number is produced by actually running the
+  snippet, then embedded as snippet + real output — never hand-computed and hoped correct.
 
 ## Deliverable
 
@@ -78,8 +85,13 @@ Every module contains, in this order:
 6. **Checkpoint** — 2–4 mini-quiz questions plus one "explain it back in your own words"
    prompt (delivering the Execution Protocol's step 5).
 
-### Module list (maps 1:1 to Phase 1 tasks)
+### Module list (Modules 1–10 map 1:1 to Phase 1 tasks)
 - **0 — Overview** (front matter above).
+- **Warm-Up — The math on tiny arrays:** the ~6 numeric primitives (vector/shape, dot product,
+  matmul + `(batch, seq, d_model)` shape rules, softmax, RMS-normalization, 2D rotation), each
+  worked on a 2–4 element array with the computed result shown. A *primer*, not a build module —
+  uses a lighter structure (objectives → per-primitive concept/array/steps/result → checkpoint),
+  not the six-section template. Placed after Module 0, before Module 1.
 - **1 — Environment & reproducibility:** uv, venv, lockfile; the CPU-torch-pin gotcha and the
   Colab `requirements.txt` leak.
 - **2 — Tokenizer & BPE:** train/load/encode/decode, special tokens, byte-level/`Ġ` (Lab 01).
@@ -111,13 +123,16 @@ Every module contains, in this order:
 
 1. A reader with no repo access can follow the course top-to-bottom and understand the full
    Phase 1 arc — every concept, its code, and its observed result are self-contained.
-2. Every module has all six template sections; no section references an external file by path
-   without inlining what it points to.
+2. Every build module (1–10) has all six template sections; the Warm-up uses its primer
+   structure. No section references an external file by path without inlining what it points to.
 3. Embedded code matches the *current* `src/slm/*.py` (reconciled, not copied from the plan's
    pre-implementation snippets — e.g. the `lr_at` clean version, not the convoluted draft).
 4. NotebookLM can answer module-scoped tutoring prompts and run the checkpoint quizzes using
    only this document.
 5. Numbers cited (params, loss, ppl, diffs, file sizes) match `DEVLOG.md`/`CHANGELOG.md`.
+6. Every worked math example (the Warm-up primitives and the in-context examples in Modules 4
+   and 6) shows numbers produced by actually running the snippet — snippet + real output both
+   embedded, verified correct — not hand-computed.
 
 ## Out of scope
 

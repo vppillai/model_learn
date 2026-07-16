@@ -4,16 +4,18 @@
 
 **Goal:** Author a single self-contained Markdown course, `docs/phase1-course.md`, that teaches
 the entire Phase 1 arc (tokenizer → model → training → HF export → GGUF → Ollama) as a
-structured self-study course with annotated real code, for use as a NotebookLM tutoring source.
+structured self-study course with annotated real code and a small-array math warm-up, for use as
+a NotebookLM tutoring source.
 
 **Architecture:** One master document. Front matter (overview + how-to-use-in-NotebookLM +
-level + TOC), then 10 modules in build order, then a glossary. Every module follows the same
-six-section template. Content is *reconciled from the current repo* (real `src/slm/*.py`,
-`DEVLOG.md`, `CONCEPTS.md`, the Phase 1 plan) and fully inlined — no path/Lab cross-references
-that NotebookLM can't resolve.
+level + TOC), a Math Warm-up pre-session, then 10 modules in build order, then a glossary. Every
+build module follows the same six-section template; the Warm-up uses a lighter primer structure.
+Content is *reconciled from the current repo* (real `src/slm/*.py`, `DEVLOG.md`, `CONCEPTS.md`,
+the Phase 1 plan) and fully inlined — no path/Lab cross-references that NotebookLM can't resolve.
 
 **Tech Stack:** Markdown only. No code changes. Verification uses `grep` and manual cross-checks
 against `DEVLOG.md`/`CHANGELOG.md`. Source of truth for embedded code is the live `src/slm/*.py`.
+Worked math numbers are produced by running tiny snippets with the project venv (`. .venv/bin/activate`).
 
 ## Global Constraints
 
@@ -26,14 +28,19 @@ against `DEVLOG.md`/`CHANGELOG.md`. Source of truth for embedded code is the liv
 - **Code matches current source:** embed code read from the live `src/slm/*.py` this session — NOT
   the Phase 1 plan's pre-implementation snippets (e.g. use the clean `lr_at`, never the convoluted
   draft the plan tells you to replace).
+- **Math numbers are real, not hand-computed:** every worked math example (Warm-up primitives and
+  the in-context examples in Modules 4 and 6) is produced by actually running the tiny snippet;
+  embed the snippet AND its real output. Tiny arrays only (2–4 elements). Verify the numbers.
 - **Numbers match the record:** every cited figure matches `DEVLOG.md`/`CHANGELOG.md`. Canonical
   values: `SMALL` = 13.8M params; toy run loss ≈ 62 → ≈ 4.3; `small` eval loss 1.81 / perplexity
   6.1; round-trip max logit diff 9.5e-06; GGUF f16 27MB / Q8_0 15MB / Q4_K_M 11MB; vocab TOY 2048 /
   SMALL 8192; special-token ids bos=eos=pad=0; tokenizer hash `fe391dc4`→"gpt-2"; Ollama 0.31.2.
 - **Level:** intuition-first, no heavy math. Match the register of the existing `CONCEPTS.md`.
-- **Module template (every module, in order):** (1) Learning objectives, (2) Frame, (3) Annotated
-  code walkthrough, (4) What we observed, (5) Gotchas & design decisions, (6) Checkpoint (2–4 quiz
-  questions + one "explain it back" prompt).
+- **Build-module template (Modules 1–10, in order):** (1) Learning objectives, (2) Frame,
+  (3) Annotated code walkthrough, (4) What we observed, (5) Gotchas & design decisions,
+  (6) Checkpoint (2–4 quiz questions + one "explain it back" prompt). The Warm-up module is
+  exempt — it uses a primer structure (objectives → per-primitive concept/array/steps/result →
+  checkpoint).
 - **Commit cadence:** one commit per task, message prefixed `docs:`, co-author trailer
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
@@ -47,8 +54,9 @@ against `DEVLOG.md`/`CHANGELOG.md`. Source of truth for embedded code is the liv
 ## Per-task verification (the "test" for a prose deliverable)
 
 Each task ends by confirming, for the modules it authored:
-- All six template sections present.
+- All six template sections present (build modules); primer structure present (Warm-up).
 - Embedded code was copied from the live `src/slm/*.py` read during the task (not the old plan).
+- Any worked math example's numbers were produced by running the snippet (snippet + output both shown).
 - Every number cross-checks against `DEVLOG.md`/`CHANGELOG.md`.
 - No dangling references: `grep -nE '\b(Lab [0-9]|see DEVLOG|see CONCEPTS|src/slm/|labs/|2026-07-07)\b' docs/phase1-course.md`
   returns only lines where the referenced content is inlined right there (a filename used as a
@@ -63,9 +71,9 @@ Each task ends by confirming, for the modules it authored:
 
 **Interfaces:**
 - Produces: the document skeleton — H1 title, the "How this course works" template description,
-  the "How to use this in NotebookLM" note, level/prereqs, a full table of contents linking all 10
-  module headings + glossary, and Module 0's big-picture map. Later tasks append modules under the
-  TOC's headings.
+  the "How to use this in NotebookLM" note, level/prereqs, a full table of contents linking the
+  Warm-Up + all 10 module headings + glossary, and Module 0's big-picture map. Later tasks append
+  under the TOC's headings.
 
 - [ ] **Step 1: Read the source material for the overview**
 
@@ -76,23 +84,23 @@ Read `README.md`, the Phase 1 plan's Goal/Architecture (lines 1–20), and `CONC
 
 Author these sections:
 - `# Phase 1 — Build a Language Model From Scratch to Ollama: A Self-Study Course`
-- **How this course works:** one paragraph naming the six-section template so the reader (and
-  NotebookLM) know the rhythm of every module.
+- **How this course works:** one paragraph naming the six-section build-module template AND noting
+  the Warm-Up primer that comes first, so the reader (and NotebookLM) know the rhythm.
 - **How to use this in NotebookLM:** state that answers are grounded in this document; give
   concrete prompts — *"Act as my tutor and quiz me on Module 4,"* *"Check my understanding of
-  RoPE — ask me to explain it, then correct me,"* *"Give me the audio overview of the training
-  module,"* *"I'll answer the Module 6 checkpoint; grade my answers."*
+  RoPE — ask me to explain it, then correct me,"* *"Walk me through the Warm-Up softmax example
+  and then give me a new one,"* *"I'll answer the Module 6 checkpoint; grade my answers."*
 - **Who this is for / level:** intuition-first, Python literacy assumed, no heavy math.
-- **Table of contents:** Markdown links to Modules 1–10 + Glossary.
+- **Table of contents:** Markdown links to the Warm-Up, Modules 1–10, and Glossary.
 - **Module 0 — The big picture:** the "the ecosystem lets you *download → build → run* a model;
   this course *builds one* end-to-end, then hands it to the same runtimes everyone else uses"
-  framing. Include a one-line map of the 10 modules as a pipeline.
+  framing. Include a one-line map of the pipeline.
 
 - [ ] **Step 3: Verify structure**
 
 Run: `grep -nE '^#{1,3} ' docs/phase1-course.md`
-Expected: H1 title, and H2 headings for the front-matter sections + Module 0. TOC lists Modules
-1–10 + Glossary.
+Expected: H1 title, H2 headings for the front-matter sections + Module 0; TOC lists Warm-Up,
+Modules 1–10, and Glossary.
 
 - [ ] **Step 4: Commit**
 
@@ -103,7 +111,65 @@ git commit -m "docs: scaffold Phase 1 course + Module 0 (overview, NotebookLM ho
 
 ---
 
-### Task 2: Modules 1–2 (Environment & reproducibility; Tokenizer & BPE)
+### Task 2: Math Warm-up pre-session (tiny arrays, worked by hand)
+
+**Files:**
+- Modify: `docs/phase1-course.md` (append the Warm-Up module after Module 0)
+
+**Interfaces:**
+- Consumes: the doc scaffold from Task 1.
+- Produces: `## Warm-Up — The Math, on Tiny Arrays`, with a sub-section per primitive that later
+  modules reference. This primer establishes vocabulary (vector, shape, dot product, matmul,
+  softmax, RMS, rotation) so Modules 4 and 6 can lean on it.
+
+- [ ] **Step 1: Activate the venv and compute the worked numbers**
+
+Activate the environment (`. .venv/bin/activate`) and run tiny snippets to get REAL numbers for
+each primitive below. Do not hand-compute. Example pattern to run and capture:
+
+```python
+import torch
+v = torch.tensor([3.0, 4.0])
+print("rms:", v.pow(2).mean().sqrt().item())            # RMSNorm kernel
+print("normalized:", (v / v.pow(2).mean().add(1e-5).sqrt()).tolist())
+print("softmax:", torch.softmax(torch.tensor([2.0,1.0,0.0]), -1).tolist())
+print("dot:", torch.dot(torch.tensor([1.0,2.0]), torch.tensor([3.0,4.0])).item())
+```
+
+- [ ] **Step 2: Author the Warm-Up primer**
+
+Structure: brief objectives, then one short sub-section per primitive. Each sub-section = the
+concept in one plain sentence, the tiny array, the snippet, its real captured output, and one line
+on why it matters downstream. Primitives to cover:
+- **Vectors & shapes:** a token is a `d_model`-length vector; the `(batch, seq, d_model)` shape.
+- **Dot product:** the similarity number behind attention scores (compute on 2-element vectors).
+- **Matrix multiply & shape rules:** `(2,3) @ (3,4) → (2,4)`; why shapes must line up. Tie to the
+  attention `q @ k.transpose` and projection shapes.
+- **Softmax:** turn scores into a distribution; show `[2,1,0] → [0.665, 0.245, 0.090]`; note it
+  sums to 1 and how temperature would sharpen/flatten it.
+- **RMS-normalization:** compute RMS of `[3,4]`, divide, show the rescaled vector (the exact
+  RMSNorm kernel used in Module 4).
+- **2D rotation:** rotate `[1,0]` by 90° → `[0,1]`; state that RoPE applies this to q/k pairs and
+  that rotation preserves length (the property Module 4's test checks).
+- **Checkpoint:** 2–3 questions (e.g. "compute softmax of `[1,1,1]` by reasoning, not formula";
+  "why must the inner dimensions match in a matmul?") + one "explain it back": *"In one sentence
+  each, what does dot product, softmax, and rotation each do?"*
+
+- [ ] **Step 3: Verify**
+
+Run: `grep -nE '^## Warm-Up ' docs/phase1-course.md`. Confirm each primitive shows a snippet AND
+its output, and that the softmax/RMS numbers match what Step 1 actually printed.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/phase1-course.md
+git commit -m "docs: course Math Warm-up pre-session (tiny-array worked examples)"
+```
+
+---
+
+### Task 3: Modules 1–2 (Environment & reproducibility; Tokenizer & BPE)
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Modules 1 and 2)
@@ -159,7 +225,7 @@ git commit -m "docs: course Modules 1-2 (environment, tokenizer/BPE)"
 
 ---
 
-### Task 3: Module 3 (Data pipeline)
+### Task 4: Module 3 (Data pipeline)
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Module 3)
@@ -202,13 +268,13 @@ git commit -m "docs: course Module 3 (data pipeline, shift-by-one target)"
 
 ---
 
-### Task 4: Module 4 (Model internals — RMSNorm, RoPE, attention, SwiGLU)
+### Task 5: Module 4 (Model internals — RMSNorm, RoPE, attention, SwiGLU) + in-context worked example
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Module 4)
 
 **Interfaces:**
-- Consumes: template.
+- Consumes: template; the Warm-Up primitives (softmax, dot product, matmul, RMS, rotation).
 - Produces: `## Module 4 — Model Internals: RMSNorm, RoPE, Causal Attention, SwiGLU`.
 
 - [ ] **Step 1: Read the live sources**
@@ -218,42 +284,54 @@ Read `src/slm/model.py` (the component classes/functions: `RMSNorm`, `build_rope
 `tests/test_model_components.py`, and `CONCEPTS.md` entries: d_model, RMSNorm, RoPE, attention/
 causal mask, SwiGLU/feed-forward.
 
-- [ ] **Step 2: Author Module 4**
+- [ ] **Step 2: Compute the in-context worked example numbers**
 
-Six sections; this is dense, so give each component its own annotated sub-part.
+With the venv active, run a tiny 3-token, `d=2` attention by hand and capture the real numbers:
+build a `(3,2)` q and k, compute `scores = q @ k.T / sqrt(2)`, apply the causal mask (upper
+triangle → -inf), softmax each row, and print the resulting `(3,3)` attention weight matrix. Also
+capture an RMSNorm-on-a-tiny-vector result and a `rotate_half`/`apply_rope` result on a 2-element
+pair. These become the embedded worked examples.
+
+- [ ] **Step 3: Author Module 4**
+
+Six sections; this is dense, so give each component its own annotated sub-part, and use the Step 2
+worked numbers as the in-context examples.
 - **Frame:** a token is a `d_model`-length vector; RMSNorm keeps magnitudes healthy; RoPE injects
   order by *rotating* q/k (rotation preserves length, encodes *relative* distance); attention is
   the only place tokens exchange info (Q/K/V + causal mask); SwiGLU is per-token "private thinking."
 - **Annotated code:** embed `RMSNorm` (float32 trick), `build_rope_cache`+`rotate_half`+`apply_rope`
   (HF-matching convention), `Attention` (q/k/v/o projections, RoPE applied, scaled scores, `triu`
   causal mask, softmax, reshape), `SwiGLU` (gate/up/down, SiLU gate). All bias-free.
-- **What we observed:** inline Lab 02's causal-attention matrix (upper triangle = 0.00, i.e. a token
-  attends only to itself and earlier tokens); note `test_rope_preserves_shape_and_norm` (rotation
-  keeps vector norm) and `test_attention_is_causal` (perturbing the last token leaves earlier
-  outputs bit-for-bit identical).
+- **In-context worked example:** the Step 2 hand-computed 3-token attention matrix (show the
+  `(3,3)` weights with the upper triangle zeroed), tying softmax/dot-product/matmul back to the
+  Warm-Up. Show the RMSNorm and rotation mini-results too.
+- **What we observed:** inline Lab 02's causal-attention matrix (upper triangle = 0.00); note
+  `test_rope_preserves_shape_and_norm` (rotation keeps vector norm) and `test_attention_is_causal`
+  (perturbing the last token leaves earlier outputs bit-for-bit identical).
 - **Gotchas & decisions:** why RMSNorm over LayerNorm (skips mean-subtraction, cheaper); no GQA in
   Phase 1 (`n_kv_heads == n_heads`); the float32 RMSNorm trick is required for HF numerical match.
 - **Checkpoint:**
+  - "Using the Warm-Up softmax, explain why the first row of the causal attention matrix is `[1,0,0]`."
   - "Why does rotating a query/key vector (RoPE) encode *relative* position rather than absolute?"
-  - "What does the causal mask prevent, and why is that necessary at generation time?"
   - "Which sub-layer lets tokens exchange information, and which processes each token privately?"
   - Explain-it-back: "Trace one token vector through a block: norm → attention → norm → SwiGLU."
 
-- [ ] **Step 3: Verify**
+- [ ] **Step 4: Verify**
 
 Run: `grep -nE '^## Module 4 ' docs/phase1-course.md`. Confirm embedded code matches
-`src/slm/model.py`. Run the dangling-ref grep.
+`src/slm/model.py`; confirm the worked attention numbers match Step 2's real output. Run the
+dangling-ref grep.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add docs/phase1-course.md
-git commit -m "docs: course Module 4 (model internals: RMSNorm/RoPE/attention/SwiGLU)"
+git commit -m "docs: course Module 4 (model internals + hand-computed attention example)"
 ```
 
 ---
 
-### Task 5: Module 5 (Assembly + generation + echo-bias deep dive)
+### Task 6: Module 5 (Assembly + generation + echo-bias deep dive)
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Module 5)
@@ -308,13 +386,13 @@ git commit -m "docs: course Module 5 (assembly, generation, echo-bias deep dive)
 
 ---
 
-### Task 6: Modules 6–7 (Training; the real Colab run)
+### Task 7: Modules 6–7 (Training + in-context cross-entropy; the real Colab run)
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Modules 6 and 7)
 
 **Interfaces:**
-- Consumes: template; the assembled `LlamaSLM`; `get_batch`.
+- Consumes: template; the assembled `LlamaSLM`; `get_batch`; the Warm-Up softmax.
 - Produces: `## Module 6 — Training` and `## Module 7 — The Real Run (small on Colab)`.
 
 - [ ] **Step 1: Read the live sources**
@@ -325,7 +403,14 @@ Read `src/slm/train.py` (whole — use the *clean* `lr_at`, `train`, checkpoint 
 optimizer/AdamW, LR schedule, gradient clipping, checkpoint, overfitting-one-batch, device
 portability, temperature/top-k. Read `DEVLOG.md` Tasks 5–6.
 
-- [ ] **Step 2: Author Module 6 — Training**
+- [ ] **Step 2: Compute the in-context cross-entropy example**
+
+With the venv active, run a tiny cross-entropy: for a 3-class case, take logits `[2.0, 1.0, 0.0]`
+with true class 0, compute `-log(softmax(logits)[0])`, and also show the "confident-and-wrong"
+case (true class 2) to illustrate the penalty. Capture the real numbers. Reuse the Warm-Up softmax
+result `[0.665, 0.245, 0.090]` for continuity.
+
+- [ ] **Step 3: Author Module 6 — Training**
 
 - **Frame:** loss = how wrong (cross-entropy, penalizes confident-and-wrong); AdamW updates each
   param; warmup+cosine schedule; grad clip as a safety cap; overfit-one-batch as the "does learning
@@ -334,6 +419,9 @@ portability, temperature/top-k. Read `DEVLOG.md` Tasks 5–6.
   decay), the `train` loop (cross-entropy over reshaped logits, per-step LR set, zero_grad/backward/
   clip/step), and `save_checkpoint`/`load_checkpoint` (config stored as plain dict →
   `weights_only=True`; `map_location="cpu"`). Embed the temperature/top-k reshaping from Lab 05.
+- **In-context worked example:** the Step 2 cross-entropy numbers — show that predicting the true
+  token with prob 0.665 gives loss ≈ 0.41, while being confidently wrong costs far more. Tie back
+  to the Warm-Up softmax.
 - **What we observed:** overfit-one-batch drives loss < 1.0 (proof of learning); the toy run loss
   ≈ 62 → ≈ 4.3 over ~800 steps on CPU (~2 min); samples drift gibberish → story-shaped. Note the
   uniform-guess baseline `ln(vocab_size)` ≈ 7.6 and why the untrained model *starts above* it (~62)
@@ -342,12 +430,12 @@ portability, temperature/top-k. Read `DEVLOG.md` Tasks 5–6.
   the clean version is authoritative; `weights_only=True` avoids the unpickle code-execution risk;
   `load_checkpoint` needs `map_location="cpu"` to load GPU-saved checkpoints on this box.
 - **Checkpoint:**
+  - "Using the worked example, why does confidently predicting the wrong token cost so much loss?"
   - "Why ramp the learning rate up (warmup) instead of starting at the peak?"
   - "What does overfitting a single batch prove, and why do it before a real dataset?"
-  - "Why store the config as a plain dict and load with `weights_only=True`?"
   - Explain-it-back: "Why does an untrained model score loss ~62 when uniform guessing is only ~7.6?"
 
-- [ ] **Step 3: Author Module 7 — The Real Run**
+- [ ] **Step 4: Author Module 7 — The Real Run**
 
 - **Frame:** same `train()`/`LlamaSLM`, just the `SMALL` config on a GPU — device-portable code
   means TOY→SMALL is a config swap, not a rewrite.
@@ -365,22 +453,22 @@ portability, temperature/top-k. Read `DEVLOG.md` Tasks 5–6.
   - "What does perplexity 6.1 mean in plain terms?"
   - Explain-it-back: "Why did we finish Phase 1 at ~14M params instead of going bigger?"
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 
 Run: `grep -nE '^## Module [67] ' docs/phase1-course.md` (expect both). Confirm embedded code
-matches `src/slm/train.py`/`config.py`; confirm 13.8M / 1.81 / 6.1 match `DEVLOG.md`. Run the
-dangling-ref grep.
+matches `src/slm/train.py`/`config.py`; confirm the cross-entropy numbers match Step 2; confirm
+13.8M / 1.81 / 6.1 match `DEVLOG.md`. Run the dangling-ref grep.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/phase1-course.md
-git commit -m "docs: course Modules 6-7 (training loop, the real Colab run)"
+git commit -m "docs: course Modules 6-7 (training + cross-entropy example, the real Colab run)"
 ```
 
 ---
 
-### Task 7: Modules 8–9 (HF packaging + round-trip; GGUF/quantization/Ollama)
+### Task 8: Modules 8–9 (HF packaging + round-trip; GGUF/quantization/Ollama)
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Modules 8 and 9)
@@ -449,7 +537,7 @@ git commit -m "docs: course Modules 8-9 (HF export/round-trip, GGUF/quant/Ollama
 
 ---
 
-### Task 8: Module 10 (transferable mental model) + Glossary
+### Task 9: Module 10 (transferable mental model) + Glossary
 
 **Files:**
 - Modify: `docs/phase1-course.md` (append Module 10 and the Glossary)
@@ -502,7 +590,7 @@ git commit -m "docs: course Module 10 (model-compiler model) + Glossary"
 
 ---
 
-### Task 9: Final integration pass
+### Task 10: Final integration pass
 
 **Files:**
 - Modify: `docs/phase1-course.md` (TOC finalization, cross-cut consistency, read-through)
@@ -513,8 +601,8 @@ git commit -m "docs: course Module 10 (model-compiler model) + Glossary"
 
 - [ ] **Step 1: Finalize the table of contents**
 
-Confirm the Task 1 TOC links resolve to every real `## Module N`/`## Glossary` heading (fix any
-drift in titles introduced while authoring).
+Confirm the Task 1 TOC links resolve to every real heading (Warm-Up, each `## Module N`, Glossary);
+fix any drift in titles introduced while authoring.
 
 - [ ] **Step 2: Dangling-reference sweep**
 
@@ -525,13 +613,14 @@ bare "see X" pointers. Inline or rephrase any that remain.
 - [ ] **Step 3: Number-consistency check**
 
 Verify against `DEVLOG.md`/`CHANGELOG.md`: 13.8M params; toy loss ≈ 62 → ≈ 4.3; small eval loss
-1.81 / ppl 6.1; round-trip diff 9.5e-06; GGUF 27/15/11 MB; vocab 2048/8192; eos=bos=pad=0. Fix any
-mismatch.
+1.81 / ppl 6.1; round-trip diff 9.5e-06; GGUF 27/15/11 MB; vocab 2048/8192; eos=bos=pad=0. Also
+confirm every worked math example still shows snippet + its real output. Fix any mismatch.
 
 - [ ] **Step 4: Self-contained read-through**
 
-Read the whole file top-to-bottom as if you had never seen the repo. Confirm each module has all
-six template sections and that no explanation depends on opening an external file. Fix gaps inline.
+Read the whole file top-to-bottom as if you had never seen the repo. Confirm the Warm-Up primer is
+present, each build module has all six template sections, and no explanation depends on opening an
+external file. Fix gaps inline.
 
 - [ ] **Step 5: Commit**
 
@@ -547,19 +636,25 @@ git commit -m "docs: finalize Phase 1 self-study course (TOC, consistency, read-
 **Spec coverage:**
 - Single combined master doc → Task 1 creates it; all tasks append to the one file. ✓
 - Structured self-study course (objectives, ordered path, checkpoints) → six-section template with
-  checkpoints in every module task. ✓
+  checkpoints in every build module. ✓
 - Annotated real code → each module task's Step 1 reads the live `src/slm/*.py` before embedding. ✓
-- No dangling references → per-task dangling-ref grep + Task 9 Step 2 sweep. ✓
-- Observed reality embedded → every module has a "What we observed" section with canonical numbers. ✓
-- Hybrid structure, pipeline order, deep dives → Modules 1–10 in build order; deep dives in Modules
-  5 (echo bias) and 4 (RoPE). ✓
-- Glossary → Task 8 Step 3. ✓
+- Math warm-up (hybrid) → Task 2 authors the pre-session; Tasks 5 and 7 add in-context worked
+  examples (attention, cross-entropy); Global Constraints require real (run) numbers. ✓
+- No dangling references → per-task dangling-ref grep + Task 10 Step 2 sweep. ✓
+- Observed reality embedded → every build module has a "What we observed" section with canonical
+  numbers. ✓
+- Hybrid structure, pipeline order, deep dives → Warm-Up + Modules 1–10 in build order; deep dives
+  in Modules 5 (echo bias) and 4 (RoPE). ✓
+- Glossary → Task 9 Step 3. ✓
 - Level intuition-first → Global Constraints + every Frame section. ✓
 - Out of scope (no src/test/doc edits; flag errors) → Global Constraints. ✓
-- Numbers match record → Global Constraints canonical list + Task 9 Step 3. ✓
+- Numbers match record → Global Constraints canonical list + Task 10 Step 3. ✓
+- Math numbers produced by running snippets → Global Constraints + Task 2/5/7 compute steps +
+  Task 10 Step 3. ✓
 
 **Placeholder scan:** no "TBD/TODO"; checkpoint questions are written out verbatim, not deferred;
 each module task enumerates the exact code to embed and outputs to inline. ✓
 
 **Consistency:** module titles used in tasks match the TOC/verification greps; canonical numbers are
-stated once in Global Constraints and reused verbatim. ✓
+stated once in Global Constraints and reused verbatim; the Warm-Up's exemption from the six-section
+template is stated in Global Constraints and the Task 2 interface. ✓
