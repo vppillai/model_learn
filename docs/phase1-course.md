@@ -1714,6 +1714,11 @@ def test_untrained_model_echoes_last_token():
     assert logits.argmax().item() == last
 ```
 
+(The comment's "Task 5" is this project's internal name for the training work
+Module 6 covers, and the "verified quantitatively in DEVLOG.md" claim is the
+same real-number confirmation — winning logit, runner-up logit, `|embed(last)|²`
+— walked through just above in this module's own deep dive.)
+
 A companion test (`test_untrained_forward_is_finite_and_input_dependent`) still
 guards the boring-but-vital failure modes — that the forward pass produces no
 NaNs and genuinely depends on its input, so a dead or constant model can't sneak
