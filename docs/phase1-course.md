@@ -914,3 +914,474 @@ malformed or wrapped-around windows that would quietly corrupt training.
 
 **Explain it back:** why must the unit tests never download the real
 TinyStories dataset?
+
+## Module 4 — Model Internals: RMSNorm, RoPE, Causal Attention, SwiGLU
+
+### Learning objectives
+
+By the end of this Module you'll be able to explain what each of the four core
+transformer pieces does and why it exists: read the real `RMSNorm` and say why
+it rescales a token vector by its own root-mean-square (and why it does that
+arithmetic in float32); read the real `build_rope_cache`/`rotate_half`/`apply_rope`
+and explain how *rotating* a query and key bakes in word order while leaving
+their lengths untouched — and why that encodes *relative* distance rather than
+absolute position; read the real `Attention` and point to the exact lines where
+tokens exchange information (Q·K scores) and where the causal mask forbids
+looking at the future; and read the real `SwiGLU` and explain why it's called
+per-token "private thinking." You'll also be able to hand-compute a tiny 3-token
+causal-attention matrix and see why its first row is forced to be `[1, 0, 0]`.
+
+### Frame
+
+By the time a token reaches this Module's code, it's already a vector of length
+`d_model` — exactly the `(batch, seq, d_model)` shape the Warm-Up drilled into
+you (`TOY` uses `d_model=64`). Everything in a transformer block is arithmetic
+that takes those vectors in and hands the same-shaped vectors back out. There
+are four moving parts, and each has one job.
+
+**RMSNorm keeps magnitudes healthy.** Stack dozens of layers and the numbers
+flowing through them tend to drift — some token vectors grow huge, others shrink
+toward nothing — and that drift destabilizes training. RMSNorm steps in *before*
+each sub-layer and rescales every token vector by its own root-mean-square, so
+whatever came in leaves at a consistent, comparable size. It's the exact RMS
+kernel from the Warm-Up, wrapped in a learnable per-dimension `weight`.
+
+**RoPE injects order by rotating q and k.** Attention, on its own, is
+order-blind: shuffle the tokens and the raw dot products don't care. RoPE fixes
+that by *rotating* each query and key vector by an angle proportional to the
+token's position — token 0 rotates by nothing, token 5 rotates further, token 20
+further still. Rotation is the perfect tool for this because, as the Warm-Up
+showed, it never changes a vector's length — it only spins it. So position gets
+baked in without corrupting the magnitude information the vector already
+carries. The deeper payoff: when a rotated query later meets a rotated key,
+their interaction depends only on the *difference* between their positions, not
+the absolute positions themselves — RoPE encodes *relative* distance.
+
+**Attention is the only place tokens exchange information.** Every token emits
+three projected vectors: a Query ("what am I looking for?"), a Key ("what do I
+offer?"), and a Value ("what do I carry?"). Each token scores its own Query
+against every token's Key with a dot product (the Warm-Up's dot product, exactly
+— big score means "these two point the same way"), turns those scores into
+weights with softmax, and then blends everyone's Values by those weights. That
+blend is the one and only moment in the whole architecture where information
+moves *between* tokens. A **causal mask** constrains it: a token may attend to
+itself and to earlier tokens, never to later ones — because at generation time
+the later tokens don't exist yet.
+
+**SwiGLU is per-token "private thinking."** Right after attention has let tokens
+talk to each other, each token goes off and processes what it just gathered — on
+its own, with no further cross-token interaction. SwiGLU expands the token vector
+into a wider workspace (`ffn_hidden`), runs it through a gated nonlinearity, and
+projects it back down to `d_model`. No token looks at any other token here; it's
+purely private, per-position computation.
+
+One detail worth stating up front, because it's a deliberate through-line of the
+whole model: **every linear layer in this Module is bias-free** (`bias=False` on
+every `nn.Linear`). That matches the Llama architecture this project is
+rebuilding, and it's part of what lets the finished model line up bit-for-bit
+with the stock implementation later (Module 8).
+
+### Annotated code walkthrough
+
+The four pieces below are the real, current contents of `src/slm/model.py`,
+embedded verbatim and taken one at a time.
+
+**RMSNorm** — rescale each token vector by its root-mean-square, in float32:
+
+```python
+class RMSNorm(nn.Module):
+    """Llama RMSNorm: normalize by root-mean-square in float32, then scale."""
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        dtype = x.dtype
+        x = x.float()
+        var = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(var + self.eps)
+        return (self.weight * x.to(dtype))
+```
+
+- `self.weight = nn.Parameter(torch.ones(dim))` is a learnable per-dimension
+  scale, one number per `d_model` slot, initialized to all-ones. At
+  initialization it does nothing (multiplying by 1); training is free to nudge
+  individual dimensions up or down later.
+- `dtype = x.dtype` then `x = x.float()` — this is the **float32 trick**. The
+  input might arrive in a lower precision (say bfloat16 on a GPU), but the
+  normalization arithmetic is done in full float32 to avoid precision loss,
+  and only the final result is cast back with `x.to(dtype)`. This is exactly
+  what the stock Llama implementation does, and matching it is what keeps this
+  hand-built model numerically identical to the official one — see Gotchas.
+- `var = x.pow(2).mean(-1, keepdim=True)` is the mean of the squares along the
+  last axis — the "MS" in RMS. `keepdim=True` preserves the trailing dimension
+  so it broadcasts cleanly in the next step.
+- `x = x * torch.rsqrt(var + self.eps)` multiplies by the *reciprocal* square
+  root — i.e. divides by `sqrt(mean-of-squares)`, the root-mean-square. The
+  `+ self.eps` (default `1e-5`) is the same divide-by-zero insurance you saw in
+  the Warm-Up: harmless in normal cases, life-saving if a vector were ever all
+  zeros.
+- `return (self.weight * x.to(dtype))` casts back to the original precision and
+  applies the learnable scale.
+
+Notice what's *absent*: there is no subtracting of the mean anywhere. That
+single omission is the whole difference between RMSNorm and the older LayerNorm
+(Gotchas covers why that's a deliberate, cheaper choice).
+
+**RoPE** — build a rotation cache once, then apply it to q and k:
+
+```python
+def build_rope_cache(head_dim: int, seq_len: int, theta: float):
+    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2).float() / head_dim))
+    pos = torch.arange(seq_len).float()
+    freqs = torch.outer(pos, inv_freq)            # (seq, head_dim/2)
+    emb = torch.cat((freqs, freqs), dim=-1)       # (seq, head_dim)
+    return emb.cos(), emb.sin()
+
+
+def rotate_half(x):
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rope(x, cos, sin):
+    # x: (B, n_heads, T, head_dim); cos/sin: (T, head_dim)
+    cos = cos.unsqueeze(0).unsqueeze(0)
+    sin = sin.unsqueeze(0).unsqueeze(0)
+    return (x * cos) + (rotate_half(x) * sin)
+```
+
+- `build_rope_cache` precomputes the rotation angles once, for every position,
+  so attention never recomputes them. `inv_freq` is a set of frequencies — one
+  per *pair* of dimensions (`torch.arange(0, head_dim, 2)` steps by two) —
+  ranging from fast (angle changes a lot per position) to slow. Low dimensions
+  spin quickly and encode fine-grained "am I one or two tokens apart"; high
+  dimensions spin slowly and encode coarse long-range position. `theta`
+  (`rope_theta`, `10000.0` here) sets how fast that frequency falloff is.
+- `freqs = torch.outer(pos, inv_freq)` makes a `(seq, head_dim/2)` table where
+  entry `(p, i)` is "position `p` times frequency `i`" — the rotation angle for
+  that position and dimension-pair. `emb = torch.cat((freqs, freqs), dim=-1)`
+  duplicates it to full `head_dim` width, and the function returns the cosine
+  and sine of every angle. Precomputing `cos`/`sin` means the actual rotation
+  is just multiplies and adds.
+- `rotate_half` is the "spin" partner. It splits a vector into its first half
+  and second half, then returns `[-second_half, first_half]`. Paired with the
+  duplicated `cos`/`sin`, this is what makes `apply_rope` a genuine rotation:
+  the standard 2D rule "new_x = x·cos − y·sin, new_y = x·sin + y·cos" falls out
+  of `x * cos + rotate_half(x) * sin`.
+- `apply_rope` broadcasts `cos`/`sin` across the batch and head axes
+  (`unsqueeze(0).unsqueeze(0)`) and applies `x * cos + rotate_half(x) * sin` to
+  the whole `(B, n_heads, T, head_dim)` tensor at once. This exact
+  split-in-half convention (rather than rotating adjacent interleaved pairs) is
+  the one the stock Llama implementation uses — picking it deliberately is part
+  of the round-trip match in Module 8.
+
+**Attention** — project to Q/K/V, apply RoPE, score, mask, softmax, blend:
+
+```python
+class Attention(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.q_proj = nn.Linear(cfg.d_model, cfg.n_heads * cfg.head_dim, bias=False)
+        self.k_proj = nn.Linear(cfg.d_model, cfg.n_kv_heads * cfg.head_dim, bias=False)
+        self.v_proj = nn.Linear(cfg.d_model, cfg.n_kv_heads * cfg.head_dim, bias=False)
+        self.o_proj = nn.Linear(cfg.n_heads * cfg.head_dim, cfg.d_model, bias=False)
+
+    def forward(self, x, cos, sin):
+        B, T, _ = x.shape
+        c = self.cfg
+        q = self.q_proj(x).view(B, T, c.n_heads, c.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, c.n_kv_heads, c.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, c.n_kv_heads, c.head_dim).transpose(1, 2)
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
+        scores = (q @ k.transpose(-2, -1)) * (c.head_dim ** -0.5)
+        mask = torch.full((T, T), float("-inf"), device=x.device).triu(1)
+        scores = scores + mask
+        attn = F.softmax(scores, dim=-1)
+        out = attn @ v                                  # (B, n_heads, T, head_dim)
+        out = out.transpose(1, 2).reshape(B, T, c.n_heads * c.head_dim)
+        return self.o_proj(out)
+```
+
+- The four `nn.Linear(..., bias=False)` projections are the matmuls-against-a-
+  weight-matrix from the Warm-Up: `q_proj`, `k_proj`, `v_proj` each turn the
+  incoming `d_model` vector into Query, Key, and Value vectors, and `o_proj`
+  turns the blended result back into a `d_model` vector at the end. In `TOY`,
+  `n_heads * head_dim` is `4 * 16 = 64`, exactly `d_model`.
+- `.view(B, T, c.n_heads, c.head_dim).transpose(1, 2)` splits the projected
+  vector into `n_heads` independent heads and moves the head axis forward, so
+  each head attends in its own `head_dim`-sized subspace in parallel. Multiple
+  heads let the model look for several different relationships at once.
+- `q = apply_rope(q, cos, sin)` and the matching line for `k` inject position
+  by rotating the queries and keys (but *not* the values — position matters for
+  deciding who-attends-to-whom, not for what content gets carried).
+- `scores = (q @ k.transpose(-2, -1)) * (c.head_dim ** -0.5)` is the heart of
+  it: `q @ kᵀ` is the batch of dot products of every Query against every Key
+  (the Warm-Up's matmul-as-many-dot-products), producing a `(T, T)` score grid
+  per head. Multiplying by `head_dim ** -0.5` divides by `sqrt(head_dim)` — a
+  scaling that keeps the scores from growing huge as `head_dim` grows, which
+  would otherwise saturate the softmax.
+- `mask = torch.full((T, T), float("-inf"), ...).triu(1)` builds a `(T, T)`
+  matrix that is `-inf` strictly *above* the diagonal (`triu(1)` = keep the
+  upper triangle, offset by 1) and `0` on and below it. Adding it to `scores`
+  drives every "attend to a future token" entry to `-inf`.
+- `attn = F.softmax(scores, dim=-1)` is the Warm-Up's softmax applied along each
+  query's row of scores, turning them into weights that sum to 1 — and any score
+  that's `-inf` becomes exactly `0`, which is precisely how the causal mask
+  erases the future.
+- `out = attn @ v` blends the Value vectors by those weights (matmul again),
+  `.transpose(1, 2).reshape(...)` glues the heads back into one `d_model`-wide
+  vector per token, and `self.o_proj(out)` is the final projection back into the
+  model's working space.
+
+**SwiGLU** — the per-token feed-forward, gate × up, then down:
+
+```python
+class SwiGLU(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.gate_proj = nn.Linear(cfg.d_model, cfg.ffn_hidden, bias=False)
+        self.up_proj = nn.Linear(cfg.d_model, cfg.ffn_hidden, bias=False)
+        self.down_proj = nn.Linear(cfg.ffn_hidden, cfg.d_model, bias=False)
+
+    def forward(self, x):
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+```
+
+- `gate_proj` and `up_proj` both expand the `d_model` vector up to the wider
+  `ffn_hidden` workspace (`128` in `TOY`, versus `d_model=64`) — two separate
+  projections of the same input.
+- `F.silu(self.gate_proj(x))` runs the *gate* branch through SiLU (a smooth
+  nonlinearity: `x * sigmoid(x)`), and `* self.up_proj(x)` multiplies it
+  element-wise against the *up* branch. That multiplicative gating is the "GLU"
+  (gated linear unit) idea — the gate branch learns to selectively let parts of
+  the up branch through, which is more expressive than a single activation.
+- `self.down_proj(...)` projects the wide result back down to `d_model`. Every
+  operation here is per-token; nothing crosses between positions. All three
+  layers are, again, bias-free.
+
+### In-context worked example
+
+Let's make attention concrete with the smallest possible case: **3 tokens, each
+a `d=2` vector**, one head, no learned weights — just the arithmetic. This is
+the same computation `Attention.forward` does, stripped to its core. Run:
+
+```python
+import torch
+torch.manual_seed(0)
+q = torch.randn(3, 2)          # 3 query vectors, 2 numbers each
+k = torch.randn(3, 2)          # 3 key vectors
+scores = (q @ k.T) / (2 ** 0.5)          # dot products, scaled by sqrt(head_dim=2)
+mask = torch.triu(torch.full((3, 3), float("-inf")), 1)  # -inf above the diagonal
+w = torch.softmax(scores + mask, -1)     # per-row softmax → attention weights
+print(w)
+```
+
+The intermediate values, printed as they came out:
+
+```
+q = [[1.541, -0.2934], [-2.1788, 0.5684], [-1.0845, -1.3986]]
+k = [[0.4033, 0.838], [-0.7193, -0.4033], [-0.5966, 0.182]]
+
+raw scores (q @ kᵀ / sqrt2):
+  [ 0.2656, -0.7001, -0.6879]
+  [-0.2846,  0.9460,  0.9924]
+  [-1.1381,  0.9505,  0.2775]
+
+after adding the causal mask:
+  [ 0.2656,  -inf,   -inf ]
+  [-0.2846,  0.9460,  -inf ]
+  [-1.1381,  0.9505,  0.2775]
+```
+
+Now the softmax of each row gives the `(3, 3)` attention-weight matrix, with its
+upper triangle zeroed by the mask:
+
+```
+attention weights:
+  q0:  1.0000   0.0000   0.0000
+  q1:  0.2261   0.7739   0.0000
+  q2:  0.0758   0.6120   0.3122
+```
+
+Read it row by row and every Warm-Up primitive shows up:
+
+- **Row `q0` is `[1, 0, 0]`.** Token 0 is the very first token — there is nobody
+  before it, so the mask sends both other entries to `-inf`, and softmax over a
+  single surviving score always returns `1.0` (the Warm-Up's rule: softmax of a
+  lone value, or equivalently one finite score against two `-inf`s, puts all the
+  weight on that one). Token 0 can only attend to itself.
+- **Row `q1` is `[0.226, 0.774, 0]`.** Token 1 sees tokens 0 and 1. Its raw
+  scores were `-0.285` and `0.946` (dot products of its Query with each Key,
+  scaled by `sqrt(2)`), and softmax of `[-0.285, 0.946]` is `[0.226, 0.774]` —
+  more weight on the higher-scoring key, exactly as the Warm-Up's softmax
+  preserves order. The future token 2 is zeroed out.
+- **Row `q2` is `[0.076, 0.612, 0.312]`.** Token 2 sees all three; its three
+  scaled dot products softmax to weights that sum to 1, with the largest share
+  going to the key it pointed most toward (token 1).
+
+Each entry started as a **dot product** (Warm-Up), the whole grid was one
+**matmul** (`q @ kᵀ`, Warm-Up), and each row was turned into weights by
+**softmax** (Warm-Up). The causal mask is nothing more than adding `-inf` before
+that softmax.
+
+The other two pieces reduce to their Warm-Up primitives just as cleanly. Here is
+**RMSNorm** on a tiny vector, using the real class with its default all-ones
+`weight`:
+
+```python
+from slm.model import RMSNorm
+import torch
+out = RMSNorm(2)(torch.tensor([3.0, 4.0]))
+print([round(v, 4) for v in out.tolist()])   # [0.8485, 1.1314]
+```
+
+That's the identical result the Warm-Up's RMS example produced for `[3, 4]`
+(`[0.849, 1.131]`) — because RMSNorm *is* that kernel: divide by the
+root-mean-square (`sqrt((9+16)/2) ≈ 3.536`), scale by the learnable weight
+(here `1`). The root-mean-square of the output is `1.0000`, which is the whole
+point — whatever magnitude went in, a unit-RMS vector comes out.
+
+And here is **RoPE** on a 2-element pair. First `rotate_half`, the spin partner:
+
+```python
+from slm.model import rotate_half
+import torch
+print(rotate_half(torch.tensor([0.8, 0.6])).tolist())   # [-0.6, 0.8]
+```
+
+It splits `[0.8, 0.6]` into halves and returns `[-0.6, 0.8]` — the second half
+negated and swapped in front, the algebraic ingredient of a rotation. Now the
+full `apply_rope`, rotating the pair `[1, 0]` by the angle for position 1:
+
+```python
+from slm.model import build_rope_cache, apply_rope
+import torch
+cos, sin = build_rope_cache(head_dim=2, seq_len=4, theta=10000.0)
+x = torch.tensor([1.0, 0.0]).view(1, 1, 1, 2)       # (B, heads, T, head_dim)
+r = apply_rope(x, cos[1:2], sin[1:2])
+print([round(v, 4) for v in r.view(-1).tolist()])   # [0.5403, 0.8415]
+```
+
+`[1, 0]` rotated to `[0.5403, 0.8415]` — which is exactly `[cos(1), sin(1)]`, a
+rotation by 1 radian, straight out of the Warm-Up's 2D-rotation section. The
+norm before is `1.0` and the norm after is `1.0`: the rotation moved the vector
+but did not stretch it.
+
+Finally, the *relative*-distance property, made numeric. Rotate a fixed query
+`q` and key `k` to various positions and take their dot product; what matters is
+only the gap between the positions, never the absolute positions:
+
+```python
+from slm.model import build_rope_cache, apply_rope
+import torch
+cos, sin = build_rope_cache(head_dim=2, seq_len=8, theta=10000.0)
+q = torch.tensor([0.7, 0.9]).view(1, 1, 1, 2)
+k = torch.tensor([0.4, -0.3]).view(1, 1, 1, 2)
+def rot(x, p): return apply_rope(x, cos[p:p+1], sin[p:p+1]).view(-1)
+for m, n in [(1, 0), (4, 3), (6, 5)]:
+    print(f"gap {m-n}:", round(torch.dot(rot(q, m), rot(k, n)).item(), 4))
+```
+
+```
+gap 1: -0.4742
+gap 1: -0.4742
+gap 1: -0.4742
+```
+
+Positions `(1,0)`, `(4,3)`, `(6,5)` are three different places in the sequence,
+but all are one token apart — and the rotated dot product is `-0.4742` in every
+case. (Change the gap to 3 and every pair collapses to a *different* shared
+value, `-0.0903`.) That identical-across-absolute-positions number is what
+"RoPE encodes relative distance" means, as a real result.
+
+### What we observed
+
+Running the attention block on a real 5-token sequence (`TOY` config, one head)
+and printing head 0's weight matrix shows the causal structure at slightly
+larger scale than the hand example:
+
+`labs/lab02_attention_peek.py`:
+
+```
+Attention weights (row = query position, col = key position), head 0:
+  q0: 1.00 0.00 0.00 0.00 0.00
+  q1: 0.41 0.59 0.00 0.00 0.00
+  q2: 0.50 0.27 0.23 0.00 0.00
+  q3: 0.20 0.25 0.33 0.22 0.00
+  q4: 0.16 0.20 0.21 0.18 0.24
+```
+
+The entire upper triangle is `0.00` — every "attend to a later token" entry —
+and each row sums to 1. Row `q0` is `[1.00, 0, 0, 0, 0]` for the same reason it
+was in the hand example: the first token has only itself to attend to. This is
+the causal mask working exactly as designed on live code.
+
+Two unit tests (in `tests/test_model_components.py`) pin down the two most
+important guarantees, and both pass:
+
+- `test_rope_preserves_shape_and_norm` builds a random `(1, n_heads, 7, head_dim)`
+  tensor, applies RoPE, and asserts the per-position vector norms are unchanged
+  (`out.norm(dim=-1)` matches `x.norm(dim=-1)` to within `1e-4`). This is the
+  length-preserving property of rotation, verified on the real `apply_rope` —
+  RoPE spins the vector, it never resizes it.
+- `test_attention_is_causal` runs attention on a 6-token sequence, then adds
+  `10.0` to *only the last token* and runs it again. It asserts the outputs for
+  positions 0 through 4 are identical (to within `1e-5`). Because the causal
+  mask forbids earlier tokens from ever attending to the last one, changing the
+  future genuinely cannot reach into the past — the earlier outputs come out
+  bit-for-bit unchanged.
+
+### Gotchas & design decisions
+
+**Why RMSNorm instead of LayerNorm.** The classic LayerNorm does two things:
+subtract the mean of each vector (re-centering it on zero), then divide by the
+standard deviation. RMSNorm keeps only the second idea — divide by the
+root-mean-square — and drops the mean-subtraction entirely. You can see that
+directly in the code: there is no `x - x.mean(...)` anywhere. In practice the
+re-centering turns out not to matter much for transformer quality, and skipping
+it is cheaper (one fewer pass over the vector, no mean to compute and subtract).
+That's why Llama and most modern LLMs use RMSNorm — and this project follows
+suit to stay architecturally faithful.
+
+**No GQA in Phase 1 (`n_kv_heads == n_heads`).** Some larger models save memory
+with *grouped-query attention*, where several Query heads share a single Key/Value
+head (`n_kv_heads < n_heads`). The code above already supports that — notice
+`k_proj` and `v_proj` size themselves off `n_kv_heads` while `q_proj` uses
+`n_heads`. But in this project's configs those two counts are equal (`TOY` uses
+`n_heads=4, n_kv_heads=4`), so every Query head gets its own Key/Value head and
+there's no grouping. The machinery is present; Phase 1 simply doesn't turn it on.
+
+**The float32 RMSNorm trick is required for the HF numerical match.** The
+`x = x.float()` / `x.to(dtype)` dance in RMSNorm isn't cosmetic. The stock Llama
+RMSNorm computes its normalization in float32 regardless of the input precision,
+and this project's whole export story rests on this hand-built model producing
+*identical* outputs to the official `LlamaForCausalLM` (a round-trip check of
+max-abs-difference around `1e-5`, pure float noise — the correctness linchpin the
+export in Module 8 depends on). If RMSNorm normalized in a lower precision
+instead, the two implementations would diverge by more than float noise and that
+match would break. Doing the RMS arithmetic in float32 and casting back is what
+keeps them bit-for-bit aligned.
+
+### Checkpoint
+
+1. Using the Warm-Up's softmax, explain why the first row of the causal
+   attention matrix is `[1, 0, 0]`. (Hint: what does the mask do to token 0's
+   scores for tokens 1 and 2, and what does softmax return when only one score
+   survives?)
+2. Why does rotating a query/key vector (RoPE) encode *relative* position rather
+   than absolute? Point to the worked example where three different
+   position-pairs with the same gap produced the same dot product.
+3. Which sub-layer lets tokens exchange information, and which processes each
+   token privately? Name the exact operation in `Attention.forward` where the
+   exchange happens.
+
+**Explain it back:** trace one token vector through a block, in your own words —
+`norm → attention → norm → SwiGLU`. What does each step do to the vector, which
+step is the only one that mixes in information from *other* tokens, and why is
+the vector normalized *before* each sub-layer rather than after? (You'll see
+these four pieces wired together into a full residual block in Module 5.)
