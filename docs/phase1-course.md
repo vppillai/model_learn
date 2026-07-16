@@ -684,8 +684,8 @@ followed `x` at that position. That's the whole training signal for
 language modeling — no labels file, no human annotation, just the text
 itself, read one position ahead of where you started.
 
-This is exactly the tiny-array indexing from the Warm-Up, just applied to a
-much longer array: if `t` is the entire token stream and `s` is some
+Mechanically, this is nothing fancier than plain Python slice indexing
+applied to one long array: if `t` is the entire token stream and `s` is some
 starting position, `x = t[s : s+context_len]` and `y = t[s+1 :
 s+1+context_len]` — one slice, and that same slice again, shifted over by
 one. Because every position in `x` gets its own real target sitting right
@@ -869,11 +869,17 @@ document boundary sitting right there.
 training needs the actual TinyStories corpus (roughly 1.9GB, pulled via the
 Hugging Face `datasets` library). `load_tinystories` supports two modes:
 give it a `limit`, and it streams the dataset (`streaming=True`) and stops
-after collecting the first `limit` stories, so a small toy run never has to
-download the full corpus just to use a few thousand stories; leave `limit`
-as `None`, and it downloads the entire split (the Colab `small` run in
-Module 7 uses this path). But even the streaming path still touches a live
-network and an external, upstream-hosted dataset — exactly the kind of
+after collecting the first `limit` stories, so a run never has to download
+the full corpus just to use a subset; leave `limit` as `None`, and it
+downloads the entire split instead. The real Colab `small` run (Module 7
+covers it in full) takes the first path, not the second — its data-loading
+cell calls `load_tinystories("train", limit=200_000)`, a RAM-safe streaming
+subset chosen deliberately: the notebook's own notes explain that 200,000
+stories (~47M tokens) is already plenty for coherent little stories from
+its 14M-parameter model, while holding the *entire* dataset in a Python
+list would overflow Colab's roughly 12GB of RAM. But even the streaming
+path still touches a live network and an external, upstream-hosted
+dataset — exactly the kind of
 dependency a unit test should never have (network flakiness, CI slowness,
 the dataset itself changing upstream). So `tests/test_data.py` never calls
 `load_tinystories` at all. Instead, every test in that file builds its data
