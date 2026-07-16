@@ -111,20 +111,20 @@ import torch
 torch.manual_seed(0)
 x = torch.randn(2, 3, 4)  # (batch=2, seq=3, d_model=4)
 print("shape:", tuple(x.shape))
-print(x.tolist())
+print("x[0,0] (one token vector):", [round(v, 3) for v in x[0,0].tolist()])
 ```
 ```
 shape: (2, 3, 4)
-[[[-1.1258398294448853, -1.152360200881958, -0.2505785822868347, -0.4338788390159607], [0.8487103581428528, 0.6920092105865479, -0.31601276993751526, -2.1152195930480957], [0.46809640526771545, -0.1577124446630478, 1.4436601400375366, 0.26604941487312317]], [[0.16645532846450806, 0.8743818402290344, -0.14347423613071442, -0.1116093322634697], [0.931826651096344, 1.2590092420578003, 2.0049805641174316, 0.05373689904808998], [0.6180566549301147, -0.41280221939086914, -0.8410646915435791, -2.316041946411133]]]
+x[0,0] (one token vector): [-1.126, -1.152, -0.251, -0.434]
 ```
 
-That's 2 sequences of 3 tokens each, each token a 4-number vector — the very
-first token rounds to about `[-1.126, -1.152, -0.251, -0.434]`. Nothing about
-these numbers is meaningful yet (they're random), but the *shape* is the
-whole point: every module from here on — the batcher in Module 3, the
-attention block in Module 4, the training loop in Module 6 — is just doing
-arithmetic that keeps this `(batch, seq, d_model)` shape intact (or
-deliberately reshapes it on purpose).
+That's 2 sequences of 3 tokens each, each token a 4-number vector — `x[0,0]`,
+the first token of the first sequence, is that vector: `[-1.126, -1.152,
+-0.251, -0.434]`. Nothing about these numbers is meaningful yet (they're
+random), but the *shape* is the whole point: every module from here on — the
+batcher in Module 3, the attention block in Module 4, the training loop in
+Module 6 — is just doing arithmetic that keeps this `(batch, seq, d_model)`
+shape intact (or deliberately reshapes it on purpose).
 
 ### Dot product
 
