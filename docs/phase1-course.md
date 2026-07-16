@@ -88,3 +88,200 @@ quantized GGUF file → running locally in Ollama.**
 Each arrow in that line is one or more Modules. The Warm-Up right after this
 section gives you the tiny bits of math notation you need before Module 1
 starts the walk.
+
+## Warm-Up — The Math, on Tiny Arrays
+
+**Learning objectives:** by the end of this Warm-Up you'll be able to read a
+shape like `(batch, seq, d_model)` without flinching, compute a dot product
+and a small matrix multiply by checking shapes instead of grinding through
+arithmetic, explain in plain words what softmax and RMS-normalization each do
+to a vector, and see why a 2D rotation is the trick RoPE uses to bake
+position into attention. Every number below is real — it's the actual output
+of a two-line PyTorch snippet, not something worked out by hand.
+
+### Vectors & shapes
+
+A token, once it's inside the model, is just a list of numbers — a vector of
+length `d_model`. Stack a batch of sequences of these vectors and you get the
+shape you'll see stamped on nearly every tensor in this course:
+`(batch, seq, d_model)`.
+
+```python
+import torch
+torch.manual_seed(0)
+x = torch.randn(2, 3, 4)  # (batch=2, seq=3, d_model=4)
+print("shape:", tuple(x.shape))
+print(x.tolist())
+```
+```
+shape: (2, 3, 4)
+[[[-1.1258398294448853, -1.152360200881958, -0.2505785822868347, -0.4338788390159607], [0.8487103581428528, 0.6920092105865479, -0.31601276993751526, -2.1152195930480957], [0.46809640526771545, -0.1577124446630478, 1.4436601400375366, 0.26604941487312317]], [[0.16645532846450806, 0.8743818402290344, -0.14347423613071442, -0.1116093322634697], [0.931826651096344, 1.2590092420578003, 2.0049805641174316, 0.05373689904808998], [0.6180566549301147, -0.41280221939086914, -0.8410646915435791, -2.316041946411133]]]
+```
+
+That's 2 sequences of 3 tokens each, each token a 4-number vector — the very
+first token rounds to about `[-1.126, -1.152, -0.251, -0.434]`. Nothing about
+these numbers is meaningful yet (they're random), but the *shape* is the
+whole point: every module from here on — the batcher in Module 3, the
+attention block in Module 4, the training loop in Module 6 — is just doing
+arithmetic that keeps this `(batch, seq, d_model)` shape intact (or
+deliberately reshapes it on purpose).
+
+### Dot product
+
+The dot product multiplies two vectors element-by-element and adds up the
+results into a single number — a measure of how much two vectors "point the
+same way."
+
+```python
+import torch
+a = torch.tensor([1.0, 2.0])
+b = torch.tensor([3.0, 4.0])
+print("dot:", torch.dot(a, b).item())
+```
+```
+dot: 11.0
+```
+
+`1*3 + 2*4 = 11`. That's it — one number out of two vectors in. This is the
+entire arithmetic core of attention: in Module 4, "how much should this token
+attend to that token" is computed by taking the dot product of a query
+vector and a key vector.
+
+### Matrix multiply & shape rules
+
+A matrix multiply is just a lot of dot products at once: row `i` of the
+first matrix dotted with column `j` of the second gives entry `(i, j)` of the
+result. The rule that makes this legal: the *inner* dimensions have to match
+— `(2,3) @ (3,4) → (2,4)`. The `3`s cancel out; what's left is the outer
+shape.
+
+```python
+import torch
+A = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2,3)
+B = torch.tensor([[1.0, 0.0, 0.0, 1.0],
+                   [0.0, 1.0, 0.0, 1.0],
+                   [0.0, 0.0, 1.0, 1.0]])              # (3,4)
+C = A @ B
+print("A shape:", tuple(A.shape))
+print("B shape:", tuple(B.shape))
+print("C shape:", tuple(C.shape))
+print(C.tolist())
+```
+```
+A shape: (2, 3)
+B shape: (3, 4)
+C shape: (2, 4)
+[[1.0, 2.0, 3.0, 6.0], [4.0, 5.0, 6.0, 15.0]]
+```
+
+Every "projection" in the model — turning a `d_model`-length vector into a
+query, a key, a value, or a vocabulary of logits — is a matmul against a
+weight matrix, and it only works because someone made sure the inner
+dimension lines up. This is exactly the shape-bookkeeping behind Module 4's
+`q @ k.transpose(-2, -1)` attention scores.
+
+### Softmax
+
+Softmax takes a list of raw scores and turns them into a probability
+distribution: everything comes out positive and the whole thing sums to 1,
+while preserving the *order* of the scores (bigger score in, bigger share of
+the probability out).
+
+```python
+import torch
+scores = torch.tensor([2.0, 1.0, 0.0])
+probs = torch.softmax(scores, -1)
+print("softmax:", probs.tolist())
+print("sum:", probs.sum().item())
+print("softmax T=0.5 (sharper):", torch.softmax(scores / 0.5, -1).tolist())
+print("softmax T=2.0 (flatter):", torch.softmax(scores / 2.0, -1).tolist())
+```
+```
+softmax: [0.6652409434318542, 0.2447284758090973, 0.09003057330846786]
+sum: 1.0
+softmax T=0.5 (sharper): [0.8668133020401001, 0.11731041967868805, 0.01587623916566372]
+softmax T=2.0 (flatter): [0.5064803957939148, 0.30719590187072754, 0.18632373213768005]
+```
+
+`[2, 1, 0]` becomes roughly `[0.665, 0.245, 0.090]`, and yes, that sums to 1.
+Dividing the scores by a *temperature* before the softmax changes how
+confident the distribution looks without changing the ranking: dividing by
+`0.5` (a low temperature) sharpens it to about `[0.867, 0.117, 0.016]` — much
+more confident — while dividing by `2.0` (a high temperature) flattens it to
+about `[0.506, 0.307, 0.186]` — much closer to uniform. This is the exact
+function that turns raw attention scores into attention *weights* in Module
+4, and it's also the last step before sampling a token in Module 5 and half
+of the cross-entropy loss in Module 6.
+
+### RMS-normalization
+
+RMS-normalization rescales a vector by its own root-mean-square, so vectors
+with wildly different magnitudes get pulled back onto a comparable scale
+before they're used.
+
+```python
+import torch
+v = torch.tensor([3.0, 4.0])
+rms = v.pow(2).mean().sqrt().item()
+print("rms:", rms)
+normalized = (v / v.pow(2).mean().add(1e-5).sqrt()).tolist()
+print("normalized:", normalized)
+```
+```
+rms: 3.535533905029297
+normalized: [0.8485277891159058, 1.1313704252243042]
+```
+
+The root-mean-square of `[3, 4]` is about `3.536` (mean of `9` and `16` is
+`12.5`, and `sqrt(12.5) ≈ 3.536`), and dividing the original vector by that
+gives `[0.849, 1.131]`. That tiny `1e-5` added before the square root is just
+insurance against dividing by zero if a vector were ever all zeros — it
+barely nudges these numbers. This is the *exact* kernel behind RMSNorm, the
+normalization layer you'll build in Module 4.
+
+### 2D rotation
+
+Rotating a 2D vector by an angle spins it around the origin — and however
+far you spin it, its length never changes. That length-preserving property
+is the whole reason RoPE can use rotation to encode *position* without
+distorting the *magnitude* information a query or key vector carries.
+
+```python
+import torch, math
+theta = math.pi / 2  # 90 degrees
+v = torch.tensor([1.0, 0.0])
+R = torch.tensor([[math.cos(theta), -math.sin(theta)],
+                  [math.sin(theta),  math.cos(theta)]])
+rotated = R @ v
+print("rotated:", rotated.tolist())
+print("norm before:", v.norm().item())
+print("norm after:", rotated.norm().item())
+```
+```
+rotated: [6.123234262925839e-17, 1.0]
+norm before: 1.0
+norm after: 1.0
+```
+
+Rotating `[1, 0]` by 90° lands at `[0, 1]` — the `6.12e-17` on the x-axis is
+just floating-point noise standing in for an exact zero (`cos(90°)` isn't
+*quite* representable exactly). Notice the norm: `1.0` before, `1.0` after —
+unchanged. RoPE (Module 4) applies rotations like this one, at different
+angles per position, to pairs of numbers inside each query and key vector.
+The rotation angle encodes *where* a token sits in the sequence; the
+preserved length is exactly the property Module 4's RoPE test checks.
+
+### Checkpoint
+
+1. Work out `softmax([1, 1, 1])` by reasoning about what softmax does to
+   equal scores, not by grinding through the formula. What comes out, and
+   why?
+2. You have a `(4, 8)` matrix and a `(3, 8)` matrix. Why can't you compute
+   `A @ B` directly? What would have to change, and why do the inner
+   dimensions of a matmul always have to match?
+3. If you rotate a 2D vector, what property of it never changes — and why
+   does that matter for a technique like RoPE, which rotates pieces of the
+   query and key vectors?
+
+**Explain it back:** in one sentence each — what does a dot product do, what
+does softmax do, and what does a rotation do?
