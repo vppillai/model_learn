@@ -1390,3 +1390,387 @@ keeps them bit-for-bit aligned.
 step is the only one that mixes in information from *other* tokens, and why is
 the vector normalized *before* each sub-layer rather than after? (You'll see
 these four pieces wired together into a full residual block in Module 5.)
+
+## Module 5 — Assembling the Model, Generation, and the Untrained "Echo Bias"
+
+### Learning objectives
+
+By the end of this module you'll be able to: assemble the four pieces from
+Module 4 into a repeatable `Block` and stack those blocks into a whole model;
+explain what "pre-norm residual" means and why the residual connection lets the
+original token embedding survive all the way to the top of the stack; read the
+`generate` loop and describe one full step of autoregressive generation
+(predict → sample → append → repeat); and — the real payoff of this module —
+explain the *echo bias*: why a brand-new, untrained model with tied embeddings
+doesn't babble randomly but instead confidently repeats the token it just saw.
+That last point is a genuine debugging finding from building this project, and
+working through its mechanism will sharpen your intuition for dot products,
+softmax, and residual streams more than any tidy example could.
+
+### Frame
+
+Module 4 built four self-contained pieces: RMSNorm (rescale a vector),
+attention (the one place tokens exchange information), SwiGLU (per-token private
+thinking), and RoPE (bake position into attention). This module wires them into
+a working language model, and the wiring is almost embarrassingly simple.
+
+The repeating unit is a **pre-norm residual block**. "Residual" means each
+sub-layer *adds a correction* to its input rather than replacing it:
+
+```
+x = x + attn(norm(x))     # attention sub-layer
+x = x + mlp(norm(x))      # feed-forward sub-layer
+```
+
+Two ideas are stacked in each line. **Pre-norm**: the normalization happens
+*before* the sub-layer (inside the parentheses), which is more stable to train
+at depth than the original "normalize after" Transformer design. **Residual**:
+the `x + ...` means the sub-layer only has to learn a small nudge to add on top
+of `x`, not reconstruct the whole representation from scratch. A quiet
+side effect of that `x + ...` — one that becomes the star of this module — is
+that the *input* to the block always survives in the output as a strong,
+undiluted component. Stack several blocks and the very first thing that went in
+(the raw token embedding) is still sitting there near the top.
+
+The full model is then just: look up each token's embedding, run the sequence
+through a stack of these blocks, apply one **final norm**, and project to
+vocabulary-sized **logits** with a `lm_head`. The twist is that `lm_head` isn't
+a fresh matrix — it *reuses the embedding table* (weight tying). "The vector
+that represents token *t* going in" and "the row that scores token *t* coming
+out" are literally the same numbers.
+
+Finally, generating text is **autoregressive**: run the model to get a
+distribution over the next token, sample one token from it, append it to the
+sequence, and repeat with the now-longer sequence. Predict → sample → append →
+repeat, one token at a time.
+
+### Annotated code walkthrough
+
+Here is the repeating block, straight from `src/slm/model.py`. It's the four
+Module-4 pieces held together by two residual adds:
+
+```python
+class Block(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.norm1 = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.attn = Attention(cfg)
+        self.norm2 = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.mlp = SwiGLU(cfg)
+
+    def forward(self, x, cos, sin):
+        x = x + self.attn(self.norm1(x), cos, sin)
+        x = x + self.mlp(self.norm2(x))
+        return x
+```
+
+Two norms (one per sub-layer), one attention, one SwiGLU. In `forward`, notice
+that `norm1(x)` and `norm2(x)` feed the *sub-layers*, but the thing being added
+back is the un-normalized `x`. The normalization is a temporary "clean copy"
+used only to compute the correction; the running representation `x` itself is
+never overwritten, only added to. That is the residual stream, and it is why the
+original embedding persists.
+
+Now the whole model. The constructor lays out the parts and, crucially, ties the
+output projection to the embedding table:
+
+```python
+class LlamaSLM(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
+        self.norm = RMSNorm(cfg.d_model, cfg.rms_norm_eps)
+        self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+        if cfg.tie_embeddings:
+            self.lm_head.weight = self.embed_tokens.weight
+        cos, sin = build_rope_cache(cfg.head_dim, cfg.context_len, cfg.rope_theta)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
+```
+
+Read the pieces in order:
+
+- `embed_tokens` is the `(vocab_size, d_model)` lookup table from Module 4's
+  embedding discussion — one row per possible token id.
+- `layers` is a stack of `n_layers` identical `Block`s (`TOY` uses 2, `SMALL`
+  uses 6).
+- `self.norm` is the single final norm applied after the last block, before
+  scoring.
+- `lm_head` is a `bias=False` linear that turns each `d_model`-length vector
+  into `vocab_size` logits.
+- **The tying line**: `self.lm_head.weight = self.embed_tokens.weight`. This is
+  not a copy — after it runs, the two names point at the *same* tensor in
+  memory. Change one, you've changed the other. Remember this line; the entire
+  deep dive below hangs on it.
+- The last three lines precompute the RoPE cosine/sine tables once and stash
+  them as **non-persistent buffers** (`persistent=False`). A buffer is model
+  state that isn't a learnable parameter; "non-persistent" means it's kept out
+  of the saved checkpoint. That's deliberate — the RoPE tables are fully
+  determined by the config (`head_dim`, `context_len`, `rope_theta`) and can be
+  rebuilt instantly, so there's no reason to bloat every checkpoint with numbers
+  we can always recompute.
+
+The forward pass is the Frame's four steps, literally:
+
+```python
+    def forward(self, idx):
+        B, T = idx.shape
+        x = self.embed_tokens(idx)
+        cos, sin = self.rope_cos[:T], self.rope_sin[:T]
+        for layer in self.layers:
+            x = layer(x, cos, sin)
+        x = self.norm(x)
+        return self.lm_head(x)
+```
+
+Embed the token ids, slice the RoPE tables to the current sequence length `T`,
+run every block in turn (each one reading and updating the same `x`), apply the
+final norm, and project to logits. The output has shape
+`(batch, T, vocab_size)`: at *every* position it emits a full score vector over
+the vocabulary — a prediction of what comes next after that position.
+
+Generation wraps `forward` in a loop:
+
+```python
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.cfg.context_len:]
+            logits = self(idx_cond)[:, -1, :]
+            if temperature != 1.0:
+                logits = logits / max(temperature, 1e-6)
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs = torch.softmax(logits, dim=-1)
+            nxt = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, nxt], dim=1)
+        return idx
+```
+
+Walk one iteration — this *is* one full step of autoregressive generation:
+
+1. **Crop the context.** `idx[:, -self.cfg.context_len:]` keeps only the last
+   `context_len` tokens. The model was built to look at a fixed window; if the
+   sequence has grown past it, we drop the oldest tokens so the forward pass and
+   the RoPE tables stay in range.
+2. **Predict.** `self(idx_cond)[:, -1, :]` runs the forward pass and keeps only
+   the *last* position's logits — the prediction for the very next token. (The
+   scores at earlier positions are real, but during generation we only care
+   about what comes after the end.)
+3. **Reshape the distribution (optional).** Dividing by `temperature` sharpens
+   (low temperature) or flattens (high temperature) the scores, exactly the
+   softmax-temperature trick from the Warm-Up; the `max(temperature, 1e-6)`
+   guards against dividing by zero. Top-k keeps only the `k` highest logits and
+   sets the rest to `-inf`, so unlikely tokens get zero probability and can
+   never be drawn. With the defaults (`temperature=1.0`, `top_k=None`) both
+   `if` blocks are skipped and we sample straight from the raw scores.
+4. **Softmax → sample.** `softmax` turns logits into a probability distribution;
+   `torch.multinomial` draws one token from it (so generation is random, not
+   just "always the top token").
+5. **Append.** `torch.cat([idx, nxt], dim=1)` glues the new token onto the
+   sequence, and the loop repeats with the longer input.
+
+The `@torch.no_grad()` decorator says "we're only running the model forward, not
+training," which skips gradient bookkeeping and saves memory.
+
+### What we observed
+
+The striking thing about all of the above is that it runs *perfectly* on a model
+that has learned nothing at all. `nn.Embedding` and `nn.Linear` are born filled
+with small random numbers, so a freshly constructed `LlamaSLM(TOY)` already
+produces finite logits, samples tokens, and extends a sequence end-to-end. The
+architecture — the wiring — works the instant you build it. What's missing is
+only the *weights*: the specific learned numbers that make the output mean
+something.
+
+Seeding an untrained model with a real prompt makes the split vivid.
+`labs/lab03_gibberish.py` builds a tokenizer, constructs an untrained
+`LlamaSLM(TOY)` under a fixed seed, and asks it to continue `"Once upon a
+time"`:
+
+```
+=== seeded with a real prompt: 'Once upon a time' ===
+Once upon a time time time time time time time time time time time time time time time time time time time time time time time time time time time time time time time
+```
+
+It generated thirty tokens without error — the pipeline is alive. But the output
+isn't the random word-salad you might expect from random weights. It latches
+onto one word and repeats it forever. That is not a coincidence and not a bug;
+it's the echo bias, and it's the subject of the deep dive.
+
+The lab also pokes the worst case — seeding from `<|endoftext|>` (token id 0):
+
+```
+=== seeded with <|endoftext|> (id 0) — the worst-case trigger ===
+raw token ids: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+decoded: '' (empty — decode() hides <|endoftext|>, and the model just echoes it forever)
+```
+
+The model echoes token 0 twenty times over. Because the tokenizer hides the
+special token when decoding, the *text* comes back empty — so the lab prints the
+raw ids too, or the behavior would look like a mysterious blank instead of a
+perfectly clear "it repeated the last token." Same phenomenon, most extreme
+form.
+
+### Deep dive — the echo bias
+
+Here's the puzzle. Intuition says an untrained model, having learned nothing,
+should be maximally *unsure* — its next-token distribution should be roughly
+uniform, spreading probability thinly over the whole vocabulary. That intuition
+is wrong for this architecture, and understanding exactly why is worth more than
+the fix itself. An untrained tied-embedding model is not unsure at all. It is
+*confidently wrong*: it puts almost all of its probability on one specific token
+— the one it just saw. Prompt it with `"Once upon a time"` and it wants `time`,
+then `time`, then `time`.
+
+The mechanism is a two-step chain, and both steps lean on things you already
+know from the Warm-Up.
+
+**Step 1 — the residual stream keeps the last token's embedding on top.** Recall
+the pre-norm block only ever *adds* to `x`. At initialization every sub-layer's
+weights are small random numbers, so `attn(norm(x))` and `mlp(norm(x))` produce
+only small corrections. The big, dominant thing in `x` after the whole stack is
+therefore still the thing that went *in* at the bottom: the token's own
+embedding vector. So at the final position, the hidden state the model is about
+to score is, to a good approximation, just the embedding of the most recent
+token (rescaled by the final norm, which changes its length but not its
+direction).
+
+**Step 2 — weight tying turns that into a self-dot-product.** The logit for
+token *t* is the final hidden state dotted with row *t* of `lm_head`. But
+`lm_head` *is* the embedding table (that tying line). So:
+
+- The logit for the **last token** ≈ `embed(last) · embed(last)` — a vector
+  dotted with *itself*. From the Warm-Up, a dot product measures how much two
+  vectors point the same way; a vector points *perfectly* the same way as
+  itself, so this self-dot-product is its squared length — a big positive
+  number.
+- The logit for **any other token** ≈ `embed(last) · embed(other)` — two
+  *different*, essentially-random embedding rows. Random vectors in high
+  dimensions point in unrelated directions, so their dot product hovers near
+  zero.
+
+One logit towering over a field of near-zeros. And the Warm-Up's softmax section
+showed what softmax does with a gap: bigger score in, disproportionately bigger
+probability out; a *large* gap saturates it. So the distribution collapses onto
+that one token, `max_prob ≈ 1.0`, and generation — sampling, then appending —
+locks into repeating it. Even with the defaults (no temperature sharpening, no
+top-k), the raw distribution is *already* a spike, so sampling can't rescue it.
+
+Running the untrained `TOY` model (fixed seed, a random 6-token input) gives the
+real numbers behind that story:
+
+- The argmax of the final logits is exactly the last input token — the echo,
+  confirmed.
+- The winning logit is about **64.8**; the next-highest is about **26.7** — a
+  gap of roughly **38** logits. Softmax turns that gap into `max_prob` of
+  `1.000000` (yes, `1.0` to six decimal places).
+- That winning logit sits in the same ballpark as `|embed(last)|²`, which
+  measures about **69.1** for this token — i.e. the top score really is
+  approximately the last token's embedding dotted with itself, as the mechanism
+  predicts. (It lands a little under the raw squared length because the final
+  norm rescales the vector and the sub-layers do add their small corrections.)
+
+The clincher is the counter-test. Rebuild the *same* model with one change —
+`tie_embeddings=False`, so `lm_head` gets its own independent random matrix
+instead of reusing the embedding table — and the bias evaporates. Now the last
+token's embedding is dotted against unrelated `lm_head` rows, there's no
+self-dot-product to win, and `max_prob` drops to about **0.0029**, right down
+near the `1/2048 ≈ 0.00049` you'd get from a genuinely uniform guess. The echo
+was never about the residuals *alone* or the tying *alone* — it needs both: the
+residuals to carry the embedding to the top, and the tying to make the scorer
+recognize it. The project's developer log records the same result holding across
+both `TOY` and `SMALL`, across multiple seeds, and across varied (non-repeated)
+inputs — a ~30–40 logit gap every time — so it's a property of the architecture,
+not a fluke of one random init.
+
+**Why the original test was wrong.** An early version of the model's test suite
+included a check called `test_untrained_output_is_high_entropy` — it asserted
+exactly the wrong-headed intuition above, that an untrained model's output would
+be spread out (high entropy). When the model was assembled, that assertion
+failed hard: `max_prob` came back a fully saturated `1.0`, the opposite of
+high-entropy. The right response was *not* to force the model to be uniform —
+the model was behaving correctly and faithfully to real Llama. The response was
+to fix the *test's assumption*. The assertion was replaced with one that checks
+what is actually, verifiably true:
+
+```python
+def test_untrained_model_echoes_last_token():
+    # An untrained model does NOT produce a near-uniform distribution. Tied
+    # embeddings + the pre-norm residual stream carry the last token's
+    # embedding straight to the (tied) lm_head, so its self-dot-product
+    # |embed(last)|^2 dominates every other token's logit — the model's
+    # top prediction is the token it just saw. This is expected,
+    # architecture-driven behavior, verified quantitatively in DEVLOG.md
+    # (top logit ~= |embed(last)|^2). Training (Task 5) overwrites it.
+    torch.manual_seed(0)
+    m = LlamaSLM(TOY)
+    idx = torch.randint(0, TOY.vocab_size, (1, 6))
+    last = idx[0, -1].item()
+    logits = m(idx)[0, -1]
+    assert logits.argmax().item() == last
+```
+
+A companion test (`test_untrained_forward_is_finite_and_input_dependent`) still
+guards the boring-but-vital failure modes — that the forward pass produces no
+NaNs and genuinely depends on its input, so a dead or constant model can't sneak
+through. The lesson is a good one to carry forward: when a test fails, the
+assumption baked into the test is a suspect too, not just the code.
+
+### Gotchas & design decisions
+
+**Weight tying is a genuine trade-off.** On the plus side, the embedding table
+is the single largest block of numbers in a small model like this — for `TOY`
+it's the majority of all parameters — and tying means we store and train it
+*once* instead of twice, roughly halving that block. (You can see the model's
+own parameter count treats it as counted once.) It also encodes a reasonable
+prior: the notion of "what token *t* means going in" and "how strongly to bet on
+token *t* coming out" ought to be related. The minus side is this whole module's
+deep dive: tying is precisely what makes the untrained echo bias so severe. But
+that cost is temporary. It's an *initialization* artifact — training (Module 6)
+reshapes the shared matrix so the self-dot-product no longer automatically wins,
+and the model learns to bet on the token that should come *next* instead of the
+one it just saw. In fact the bias leaves a measurable fingerprint on early
+training: the starting loss comes in far *worse* than a uniform guesser's,
+precisely because the model is confidently wrong, and the first chunk of
+training is largely the optimizer un-learning the echo.
+
+**RoPE tables as non-persistent buffers.** Registering `rope_cos`/`rope_sin`
+with `persistent=False` keeps them out of the saved checkpoint. They're derived
+data — fully recomputable from the config — so persisting them would only bloat
+every checkpoint and risk a stale copy. This matters later: the export and
+GGUF-packaging steps care about exactly which tensors count as real model state,
+and position tables aren't it.
+
+**Context cropping is a hard requirement, not politeness.** The
+`idx[:, -context_len:]` slice in `generate` isn't just tidy — the RoPE tables
+were only built out to `context_len` positions, and `forward` slices them to the
+input length. Feed a longer sequence and you'd index past the end of those
+tables. Cropping keeps generation inside the window the model was actually built
+for.
+
+### Checkpoint
+
+1. An untrained model produces gibberish but still runs end-to-end. What does
+   that tell you about the split between a model's *architecture* and its
+   *weights* — which part does building the model give you for free, and which
+   part does training have to supply?
+2. Explain the mechanism of the echo bias in your own words. Why does it need
+   *both* the pre-norm residual connections *and* weight tying — what does each
+   one contribute, and what happens to the bias if you remove the tying
+   (`tie_embeddings=False`)?
+3. Why was the original `test_untrained_output_is_high_entropy` assertion
+   *wrong*? What did it assume about an untrained model, and what does the model
+   actually do instead (think about `max_prob` and the ~38-logit gap)?
+4. Using the Warm-Up's dot product and softmax: why is the logit for the last
+   token so much larger than the logit for any other token, and why does a gap
+   of ~38 in the logits turn into a `max_prob` of essentially `1.0`?
+
+**Explain it back:** describe one full step of autoregressive generation, from a
+current sequence of token ids to a sequence that's one token longer. Name each
+operation in order (crop → forward → take last position → optional
+temperature/top-k → softmax → sample → append) and say in one line what each one
+does.
